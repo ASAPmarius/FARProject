@@ -1,10 +1,10 @@
-EXEC = Messagerie
+EXEC = server
 CC = gcc
 
 #Option de compilation
 CFLAGS = -Wall -Wextra -g
 
-SRC = server.c client.c dict.c dict.h 
+SRC = dict.c dict.h globalVariables.h server.c #client.c 
 
 OBJ = $(SRC:.c=.o)
 
