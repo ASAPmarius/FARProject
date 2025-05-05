@@ -5,8 +5,11 @@
 #include <string.h>
 #include <unistd.h>
 #include "globalVariables.h"
+#include "dict.c"
 
 int main(int argc, char *argv[]) {
+
+        
     printf("Début programme récepteur UDP\n");
 
     // Création de la socket UDP
@@ -36,3 +39,5 @@ int main(int argc, char *argv[]) {
     socklen_t lgA = sizeof(struct sockaddr_in);
 
     printf("En attente de réception...\n");
+
+}
