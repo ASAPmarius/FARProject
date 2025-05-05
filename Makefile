@@ -4,7 +4,7 @@ CC = gcc
 #Option de compilation
 CFLAGS = -Wall -Wextra -g
 
-SRC = dict.c dict.h globalVariables.h server.c #client.c 
+SRC = dict.c dict.h globalVariables.c globalVariables.h server.c #client.c 
 
 OBJ = $(SRC:.c=.o)
 
@@ -16,7 +16,7 @@ $(EXEC): $(OBJ)
 %.o: %.c 
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# suppression des ficheir objets .o
+# suppression des fichier objets .o
 clean:
 	rm -f *.o
 
