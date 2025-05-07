@@ -1,10 +1,10 @@
 EXEC = server
 CC = gcc
 
-#Option de compilation
+# Compilation options
 CFLAGS = -Wall -Wextra -g
 
-SRC = dict.c dict.h globalVariables.c globalVariables.h server.c #client.c 
+SRC = dict.c globalVariables.c server.c
 
 OBJ = $(SRC:.c=.o)
 
@@ -16,13 +16,10 @@ $(EXEC): $(OBJ)
 %.o: %.c 
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# suppression des fichier objets .o
 clean:
 	rm -f *.o
 
-# suppression de l'executable
 fclean: clean
 	rm -f $(EXEC)
 
-# nettoie tout puis recompile
 re: fclean all
