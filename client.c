@@ -11,6 +11,7 @@
 
 #define BUF_SIZE 1000
 #define LOGIN_CMD "@login"
+#define MESSAGE_CMD "@message"
 
 typedef struct {
     int sockfd;
@@ -25,6 +26,17 @@ void *sendThread(void *arg) {
     while (fgets(msg, BUF_SIZE, stdin) != NULL) {
         size_t len = strlen(msg);
         if (len > 0 && msg[len-1] == '\n') msg[len-1] = '\0'; // Enlève le '\n' à la fin ajouté automatiquement par fgets
+        
+        // Format qui vérifie et guide l'utilisateur pour formater correctement leurs messages
+        if (strncmp(msg, MESSAGE_CMD, strlen(MESSAGE_CMD)) == 0) {
+            // Vérifier si le format est correct: @message &destinataire message
+            char *message_start = msg + strlen(MESSAGE_CMD) + 1; // +1 pour l'espace
+            if (strlen(message_start) > 0 && message_start[0] != '&') {
+                printf("Format incorrect. Utilisez: '@message &destinataire message'\n");
+                continue; // Ne pas envoyer le message mal formaté
+            }
+        }
+        
         if (sendto(t->sockfd, msg, strlen(msg), 0,
                    (struct sockaddr *)&t->servaddr, t->len) < 0) {
             perror("sendto");
@@ -38,13 +50,9 @@ void *sendThread(void *arg) {
 void *recvThread(void *arg) {
     thread_arg_t *t = (thread_arg_t *)arg;
     char buffer[BUF_SIZE];
-    struct sockaddr_in from_addr; // Separate structure for receiving
-    socklen_t from_len;
-    
     while (1) {
-        from_len = sizeof(from_addr); // Reset length before each receive
         ssize_t n = recvfrom(t->sockfd, buffer, BUF_SIZE-1, 0,
-                           (struct sockaddr *)&from_addr, &from_len);
+                             (struct sockaddr *)&t->servaddr, &t->len);
         if (n < 0) {
             perror("recvfrom");
             break;
@@ -98,15 +106,10 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    char buffer[BUF_SIZE];
-    ssize_t n = recvfrom(dS, buffer, BUF_SIZE-1, 0,
-                        (struct sockaddr *)&servaddr, &servlen);
-    if (n > 0) {
-        buffer[n] = '\0';
-        printf("%s\n", buffer);
-        // Display help message
-        print_help();
-    }
+    // Afficher les instructions pour l'utilisateur
+    printf("\n=== Instructions ===\n");
+    printf("Pour envoyer un message: @message &destinataire votre_message\n");
+    printf("===================\n\n");
 
     //argument pour les threads
     thread_arg_t arg = {
@@ -132,11 +135,4 @@ int main(int argc, char *argv[]) {
     close(dS);
 
     return 0;
-}
-
-void print_help() {
-    printf("\n--- Instructions ---\n");
-    printf("Pour envoyer un message: @message &destinataire votre message\n");
-    printf("Pour quitter: Ctrl+C ou tapez 'exit'\n");
-    printf("-------------------\n\n");
 }
