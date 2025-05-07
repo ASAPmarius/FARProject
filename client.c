@@ -38,9 +38,13 @@ void *sendThread(void *arg) {
 void *recvThread(void *arg) {
     thread_arg_t *t = (thread_arg_t *)arg;
     char buffer[BUF_SIZE];
+    struct sockaddr_in from_addr; // Separate structure for receiving
+    socklen_t from_len;
+    
     while (1) {
+        from_len = sizeof(from_addr); // Reset length before each receive
         ssize_t n = recvfrom(t->sockfd, buffer, BUF_SIZE-1, 0,
-                             (struct sockaddr *)&t->servaddr, &t->len);
+                           (struct sockaddr *)&from_addr, &from_len);
         if (n < 0) {
             perror("recvfrom");
             break;
@@ -94,6 +98,16 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    char buffer[BUF_SIZE];
+    ssize_t n = recvfrom(dS, buffer, BUF_SIZE-1, 0,
+                        (struct sockaddr *)&servaddr, &servlen);
+    if (n > 0) {
+        buffer[n] = '\0';
+        printf("%s\n", buffer);
+        // Display help message
+        print_help();
+    }
+
     //argument pour les threads
     thread_arg_t arg = {
         .sockfd = dS,
@@ -118,4 +132,11 @@ int main(int argc, char *argv[]) {
     close(dS);
 
     return 0;
+}
+
+void print_help() {
+    printf("\n--- Instructions ---\n");
+    printf("Pour envoyer un message: @message &destinataire votre message\n");
+    printf("Pour quitter: Ctrl+C ou tapez 'exit'\n");
+    printf("-------------------\n\n");
 }
