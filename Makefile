@@ -4,7 +4,7 @@ CC = gcc
 #Option de compilation
 CFLAGS = -Wall -Wextra -g
 
-SRC = dict.c dict.h globalVariables.c globalVariables.h server.c #client.c 
+SRC = dict.c dict.h globalVariables.c globalVariables.h server.c client.c 
 
 OBJ = $(SRC:.c=.o)
 

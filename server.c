@@ -4,12 +4,71 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdbool.h>
 #include "globalVariables.h"
 #include "dict.h"
 
 #define BUFFER_SIZE 1000
-#define LOGIN_CMD "@login"  //format: "@login username"
+#define LOGIN_CMD "@login"  //format: "@login username password"
 #define MESSAGE_CMD "@message" //format: "@message &destinataire message"
+#define USERS_FILE "save_users.txt"
+#define MAX_PASSWORD_LENGTH 50
+
+// Structure pour stocker les informations utilisateur
+typedef struct {
+    char username[BUFFER_SIZE];
+    char password[MAX_PASSWORD_LENGTH];
+} userAuthentification;
+
+// Fonction pour vérifier si un utilisateur existe et vérifier son mot de passe
+bool check_user_credentials(const char* username, const char* password) {
+    FILE* file = fopen(USERS_FILE, "r");
+    if (!file) {
+        return false;
+    }
+
+    userAuthentification user;
+    bool found = false;
+    while (fscanf(file, "%s %s", user.username, user.password) == 2) {
+        if (strcmp(user.username, username) == 0) {
+            found = true;
+            if (strcmp(user.password, password) == 0) {
+                fclose(file);
+                return true;
+            }
+            break;
+        }
+    }
+    fclose(file);
+    return false;
+}
+
+// Fonction pour sauvegarder un nouvel utilisateur
+void save_user_credentials(const char* username, const char* password) {
+    FILE* file = fopen(USERS_FILE, "a");
+    if (file) {
+        fprintf(file, "%s %s\n", username, password);
+        fclose(file);
+    }
+}
+
+// Fonction pour vérifier si un utilisateur existe déjà
+bool user_exists(const char* username) {
+    FILE* file = fopen(USERS_FILE, "r");
+    if (!file) {
+        return false;
+    }
+
+    userAuthentification user;
+    while (fscanf(file, "%s %s", user.username, user.password) == 2) {
+        if (strcmp(user.username, username) == 0) {
+            fclose(file);
+            return true;
+        }
+    }
+    fclose(file);
+    return false;
+}
 
 int main(int argc, char *argv[]) {
     printf("Début programme récepteur UDP\n");
@@ -67,34 +126,51 @@ int main(int argc, char *argv[]) {
         inet_ntop(AF_INET, &(aE.sin_addr), client_ip, INET_ADDRSTRLEN);
         
         printf("Message reçu de %s: %s\n", client_ip, buffer);
-        
-        // Vérifier si c'est une commande login
+          // Vérifier si c'est une commande login
         if (strncmp(buffer, LOGIN_CMD, strlen(LOGIN_CMD)) == 0) {
-            // Format attendu: "login username"
-            char *username = buffer + strlen(LOGIN_CMD) + 1; // +1 pour l'espace
+            char username[BUFFER_SIZE] = {0};
+            char password[MAX_PASSWORD_LENGTH] = {0};
             
-            // Vérifier si le username est valide (non vide)
-            if (strlen(username) > 0) {
-                // Insérer ou mettre à jour dans le dictionnaire
-                if (dict_insert(users, username, client_ip)) {
-                    printf("Nouvel utilisateur enregistré: %s @ %s\n", username, client_ip);
-                    
-                    // Envoyer confirmation
-                    char response[BUFFER_SIZE];
-                    sprintf(response, "Bienvenue %s! Vous êtes connecté.", username);
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            // Format attendu: "@login username password"
+            if (sscanf(buffer + strlen(LOGIN_CMD) + 1, "%s %s", username, password) >= 1) {
+                if (strlen(username) > 0) {
+                    if (user_exists(username)) {
+                        // Utilisateur existe, vérifier le mot de passe
+                        if (check_user_credentials(username, password)) {
+                            if (dict_insert(users, username, client_ip)) {
+                                printf("Utilisateur connecté: %s @ %s\n", username, client_ip);
+                                char response[BUFFER_SIZE];
+                                sprintf(response, "Bienvenue %s! Vous êtes connecté.", username);
+                                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            }
+                        } else {
+                            // Mot de passe incorrect
+                            printf("Tentative de connexion échouée pour %s: mot de passe incorrect\n", username);
+                            char response[BUFFER_SIZE] = "Erreur: Mot de passe incorrect. Veuillez réessayer.";
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        }
+                    } else {
+                        // Nouvel utilisateur
+                        if (strlen(password) > 0) {
+                            save_user_credentials(username, password);
+                            if (dict_insert(users, username, client_ip)) {
+                                printf("Nouvel utilisateur enregistré: %s @ %s\n", username, client_ip);
+                                char response[BUFFER_SIZE];
+                                sprintf(response, "Bienvenue %s! Votre compte a été créé et vous êtes connecté.", username);
+                                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            }
+                        } else {
+                            char response[BUFFER_SIZE] = "Erreur: Veuillez fournir un mot de passe pour créer votre compte.";
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        }
+                    }
                 } else {
-                    // L'utilisateur existe déjà, mise à jour impossible avec notre implémentation
-                    printf("Utilisateur déjà existant: %s\n", username);
-                    
-                    // Envoyer message d'erreur
-                    char response[BUFFER_SIZE];
-                    sprintf(response, "Erreur: Nom d'utilisateur '%s' déjà utilisé.", username);
+                    // Username vide
+                    char response[BUFFER_SIZE] = "Erreur: Veuillez fournir un nom d'utilisateur valide.";
                     sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
                 }
             } else {
-                // Username vide
-                char response[BUFFER_SIZE] = "Erreur: Veuillez fournir un nom d'utilisateur valide.";
+                char response[BUFFER_SIZE] = "Format incorrect. Utilisez: @login username password";
                 sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
             }
         } 
