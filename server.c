@@ -6,11 +6,19 @@
 #include <unistd.h>
 #include "globalVariables.h"
 #include "dict.h"
+#include <signal.h>
 
 #define BUFFER_SIZE 1000
 #define LOGIN_CMD "@login"  //format: "@login username"
 #define MESSAGE_CMD "@message" //format: "@message &destinataire message"
 #define MAX_USERS 100  // Maximum d'utilisateurs simultanés
+
+static volatile sig_atomic_t running = 1;
+
+// Handler pour SIGINT ou @shutdown
+void handle_sigint(int sig) {
+    running = 0;
+}
 
 // Structure pour stocker les informations complètes d'un client
 typedef struct {
@@ -19,7 +27,13 @@ typedef struct {
     int active;                      // Flag pour indiquer si l'entrée est active
 } ClientInfo;
 
+
+
 int main(int argc, char *argv[]) {
+
+    // installer le handler
+    signal(SIGINT, handle_sigint);
+
     printf("Début programme récepteur UDP\n");
 
     // Création de la socket UDP
@@ -72,7 +86,7 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in aE;
     socklen_t lgA = sizeof(struct sockaddr_in);
     
-    while (1) {
+    while (running) {
         // Réception message
         memset(buffer, 0, BUFFER_SIZE);
         int recvLen = recvfrom(dS, buffer, BUFFER_SIZE-1, 0, (struct sockaddr*) &aE, &lgA);
@@ -92,55 +106,96 @@ int main(int argc, char *argv[]) {
         
         // Vérifier si c'est une commande login
         if (strncmp(buffer, LOGIN_CMD, strlen(LOGIN_CMD)) == 0) {
-            // Format attendu: "@login username"
-            char *username = buffer + strlen(LOGIN_CMD) + 1; // +1 pour l'espace
-            
-            // Vérifier si le username est valide (non vide)
-            if (strlen(username) > 0) {
-                // Vérifier si l'utilisateur existe déjà
-                if (dict_get(users_dict, username) != NULL) {
-                    // L'utilisateur existe déjà
-                    printf("Utilisateur déjà existant: %s\n", username);
-                    
-                    // Envoyer message d'erreur
-                    char response[BUFFER_SIZE];
-                    sprintf(response, "Erreur: Nom d'utilisateur '%s' déjà utilisé.", username);
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
-                } else {
-                    // Nouvel utilisateur - ajouter au dictionnaire avec un index dans le tableau
-                    char index_str[10];
-                    sprintf(index_str, "%d", client_count);
-                    dict_insert(users_dict, username, index_str);
-                    
-                    // Stocker les informations complètes du client
-                    if (client_count < MAX_USERS) {
-                        strncpy(clients[client_count].username, username, sizeof(clients[client_count].username) - 1);
-                        clients[client_count].addr = aE;  // Copie complète de la structure d'adresse
-                        clients[client_count].active = 1;
+            // Extraire le nom d'utilisateur et le mot de passe
+            char *username = strtok(buffer + strlen(LOGIN_CMD) + 1, " ");
+            char *password = strtok(NULL, " ");
+
+            if (username && password) {
+                int clientIndex = -1;
+                // Chercher si l'utilisateur est déjà connecté dans le tableau des clients
+                for (int i = 0; i < client_count; i++) {
+                    if (strcmp(clients[i].username, username) == 0) {
+                        clientIndex = i;
+                        break;
+                    }
+                }
+
+                // Vérifier si l'utilisateur existe déjà dans le dictionnaire (ses identifiants sont enregistrés)
+                const char *stored_password = dict_get(users_dict, username);
+                if (stored_password) {
+                    if (strcmp(stored_password, password) == 0) {
+                        // Authentification réussie
+                        printf("Utilisateur authentifié: %s\n", username);
                         
-                        printf("Nouvel utilisateur enregistré: %s @ %s:%d (index: %d)\n", 
-                              username, client_ip, ntohs(aE.sin_port), client_count);
+                        // Si l'utilisateur n'est pas déjà dans le tableau (ou s'il s'est déconnecté), on l'ajoute ou on met à jour son adresse
+                        if (clientIndex == -1) {
+                            strncpy(clients[client_count].username, username, sizeof(clients[client_count].username) - 1);
+                            clients[client_count].addr = aE;
+                            clients[client_count].active = 1;
+                            clientIndex = client_count;
+                            client_count++;
+                        } else {
+                            // Met à jour l'adresse en cas de changement
+                            clients[clientIndex].addr = aE;
+                            clients[clientIndex].active = 1;
+                        }
                         
-                        // Envoyer confirmation
                         char response[BUFFER_SIZE];
                         sprintf(response, "Bienvenue %s! Vous êtes connecté.", username);
                         sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
-                        
-                        client_count++;
                     } else {
-                        // Limite d'utilisateurs atteinte
-                        dict_remove(users_dict, username);  // Annuler l'insertion dans le dictionnaire
-                        
-                        char response[BUFFER_SIZE] = "Erreur: Limite d'utilisateurs atteinte.";
+                        // Mot de passe incorrect
+                        printf("Mot de passe incorrect pour l'utilisateur: %s\n", username);
+                        char response[BUFFER_SIZE] = "Erreur: Mot de passe incorrect.";
                         sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
                     }
+                } else {
+                    // Nouvel utilisateur - ajouter au dictionnaire et au tableau des clients
+                    dict_insert(users_dict, username, password);
+                    printf("Nouvel utilisateur enregistré: %s\n", username);
+                    
+                    strncpy(clients[client_count].username, username, sizeof(clients[client_count].username) - 1);
+                    clients[client_count].addr = aE;
+                    clients[client_count].active = 1;
+                    clientIndex = client_count;
+                    client_count++;
+                    
+                    char response[BUFFER_SIZE];
+                    sprintf(response, "Bienvenue %s! Vous êtes enregistré et connecté.", username);
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
                 }
             } else {
-                // Username vide
-                char response[BUFFER_SIZE] = "Erreur: Veuillez fournir un nom d'utilisateur valide.";
+                // Informations manquantes
+                char response[BUFFER_SIZE] = "Erreur: Veuillez fournir un nom d'utilisateur et un mot de passe.";
                 sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
             }
         } 
+
+        //commande ping 
+        else if (strncmp(buffer, "@ping", 5) == 0) {
+            const char *reply = "pong\n";
+            if (sendto(dS, reply, strlen(reply), 0,
+                    (struct sockaddr*)&aE, lgA) < 0) {
+                perror("sendto @ping");
+            }
+            // on continue la boucle sans tomber dans les autres branches
+            continue;
+        }
+
+        //commande @shutdown
+        else if (strncmp(buffer, "@shutdown", 9) == 0) {
+            // Acknowledge
+            const char *msg = "Serveur éteint!\n";
+            sendto(dS, msg, strlen(msg), 0,
+                (struct sockaddr*)&aE, lgA);
+
+            // Déclenche le handler SIGINT => running = 0
+            raise(SIGINT);
+            // on sortira proprement de la boucle
+            continue;
+        }
+
+
         // Vérifier si c'est un message à rediriger
         else if (strncmp(buffer, MESSAGE_CMD, strlen(MESSAGE_CMD)) == 0) {
             // Format attendu: "@message &destinataire message"
@@ -171,67 +226,60 @@ int main(int argc, char *argv[]) {
                         
                         // Extraire le contenu du message (après l'espace qui suit le nom du destinataire)
                         strncpy(message_content, space_after_dest + 1, BUFFER_SIZE - 1);
-                        
-                        // Chercher l'index du destinataire dans le dictionnaire
-                        const char *dest_index_str = dict_get(users_dict, dest_username);
-                        
-                        if (dest_index_str) {
-                            int dest_index = atoi(dest_index_str);
-                            
-                            // Vérifier que l'index est valide et que le client est actif
-                            if (dest_index >= 0 && dest_index < client_count && clients[dest_index].active) {
-                                // Récupérer l'expéditeur
-                                char sender_username[BUFFER_SIZE] = "inconnu";
-                                
-                                // Chercher l'expéditeur parmi les clients connectés
-                                for (int i = 0; i < client_count; i++) {
-                                    if (clients[i].active && 
-                                        clients[i].addr.sin_addr.s_addr == aE.sin_addr.s_addr && 
-                                        clients[i].addr.sin_port == aE.sin_port) {
-                                        strncpy(sender_username, clients[i].username, BUFFER_SIZE - 1);
-                                        break;
-                                    }
-                                }
-                                
-                                // Construire le message à transférer
-                                char forward_msg[BUFFER_SIZE];
-                                sprintf(forward_msg, "Message de %s: %s", sender_username, message_content);
-                                
-                                // Récupérer l'adresse complète du destinataire
-                                struct sockaddr_in dest_addr = clients[dest_index].addr;
-                                
-                                // Envoyer le message au destinataire
-                                if (sendto(dS, forward_msg, strlen(forward_msg), 0, 
-                                         (struct sockaddr*) &dest_addr, sizeof(dest_addr)) < 0) {
-                                    perror("Erreur envoi message");
-                                    
-                                    // Informer l'expéditeur de l'échec
-                                    char error_msg[BUFFER_SIZE];
-                                    sprintf(error_msg, "Erreur d'envoi du message à %s.", dest_username);
-                                    sendto(dS, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
-                                } else {
-                                    char dest_ip[INET_ADDRSTRLEN];
-                                    inet_ntop(AF_INET, &(dest_addr.sin_addr), dest_ip, INET_ADDRSTRLEN);
-                                    printf("Message redirigé à %s (%s:%d)\n", dest_username, 
-                                          dest_ip, ntohs(dest_addr.sin_port));
-                                    
-                                    // Confirmer l'envoi à l'expéditeur
-                                    char confirm_msg[BUFFER_SIZE];
-                                    sprintf(confirm_msg, "Message envoyé à %s.", dest_username);
-                                    sendto(dS, confirm_msg, strlen(confirm_msg), 0, (struct sockaddr*) &aE, lgA);
-                                }
-                            } else {
-                                // Destinataire inactif ou index invalide
-                                char error_msg[BUFFER_SIZE];
-                                sprintf(error_msg, "Erreur: Utilisateur '%s' n'est plus connecté.", dest_username);
-                                sendto(dS, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                                            
+                        // Recherche de l'indice du destinataire dans clients[]
+                        int dest_index = -1;
+                        for (int j = 0; j < client_count; j++) {
+                            if (clients[j].active &&
+                                strcmp(clients[j].username, dest_username) == 0) {
+                                dest_index = j;
+                                break;
                             }
-                        } else {
-                            // Destinataire introuvable
-                            char error_msg[BUFFER_SIZE];
-                            sprintf(error_msg, "Erreur: Utilisateur '%s' introuvable.", dest_username);
-                            sendto(dS, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
                         }
+
+                        if (dest_index < 0) {
+                            // Destinataire introuvable ou déconnecté
+                            char err[BUFFER_SIZE];
+                            snprintf(err, sizeof(err),
+                                    "Erreur: Utilisateur '%s' introuvable ou déconnecté.\n",
+                                    dest_username);
+                            sendto(dS, err, strlen(err), 0,
+                                (struct sockaddr*)&aE, lgA);
+                            continue;
+                        }
+
+                        // À partir d'ici dest_index est valide
+                        // on récupère l'expéditeur
+                        char sender_username[BUFFER_SIZE] = "inconnu";
+                        for (int i = 0; i < client_count; i++) {
+                            if (clients[i].active &&
+                                clients[i].addr.sin_addr.s_addr == aE.sin_addr.s_addr &&
+                                clients[i].addr.sin_port        == aE.sin_port) {
+                                strncpy(sender_username,
+                                        clients[i].username,
+                                        sizeof(sender_username)-1);
+                                break;
+                            }
+                        }
+
+                        // Forward du message
+                        char forward_msg[BUFFER_SIZE];
+                        snprintf(forward_msg, sizeof(forward_msg),
+                                "Message de %s: %s\n",
+                                sender_username, message_content);
+
+                        struct sockaddr_in *dest_addr = &clients[dest_index].addr;
+                        if (sendto(dS, forward_msg, strlen(forward_msg), 0,
+                                (struct sockaddr*)dest_addr, sizeof(*dest_addr)) < 0) {
+                            perror("sendto @message");
+                        } else {
+                            char conf[BUFFER_SIZE];
+                            snprintf(conf, sizeof(conf),
+                                    "Message envoyé à %s.\n", dest_username);
+                            sendto(dS, conf, strlen(conf), 0,
+                                (struct sockaddr*)&aE, lgA);
+                        }
+
                     } else {
                         // Nom de destinataire invalide
                         char error_msg[BUFFER_SIZE] = "Erreur: Format de destinataire invalide.";

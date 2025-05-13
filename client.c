@@ -79,6 +79,15 @@ int main(int argc, char *argv[]) {
     }
     username[strcspn(username, "\n")] = '\0';
 
+    // Demande du mot de passe
+    printf("Entrez mot de passe: ");
+    char password[50]; // max 50 caractères pour le mot de passe
+    if (!fgets(password, sizeof(password), stdin)) {
+        perror("fgets"); // Erreur de lecture du mot de passe
+        exit(EXIT_FAILURE);
+    }
+    password[strcspn(password, "\n")] = '\0'; // Supprime le '\n' à la fin
+
     // Création de la socket UDP
     int dS = socket(PF_INET, SOCK_DGRAM, 0);
     if (dS < 0) {
@@ -97,9 +106,9 @@ int main(int argc, char *argv[]) {
     }
     socklen_t servlen = sizeof(servaddr);
 
-    // Envoi de la commande de login
+    // Envoi de la commande de login avec username et password
     char login_msg[BUF_SIZE]; // Message de login
-    snprintf(login_msg, BUF_SIZE, "%s %s", LOGIN_CMD, username); // Format: "@login username"
+    snprintf(login_msg, BUF_SIZE, "%s %s %s", LOGIN_CMD, username, password); // Format: "@login username password"
     if (sendto(dS, login_msg, strlen(login_msg), 0,
                (struct sockaddr *)&servaddr, servlen) < 0) {
         perror("sendto login");
