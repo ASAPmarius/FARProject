@@ -16,6 +16,7 @@
 #define MESSAGE_CMD "@message"
 #define UPLOAD_CMD "@upload"
 #define DOWNLOAD_CMD "@download"
+#define HELP_CMD "@help"
 #define TCP_PORT 8888
 #define MAX_USERS 100
 
@@ -28,6 +29,7 @@ typedef struct {
 
 // Fonction pour créer et configurer la socket TCP
 int setup_tcp_socket() {
+
     int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (tcp_socket < 0) {
         perror("Erreur création socket TCP");
@@ -36,6 +38,7 @@ int setup_tcp_socket() {
 
     struct sockaddr_in tcp_addr;
     memset(&tcp_addr, 0, sizeof(tcp_addr));
+
     tcp_addr.sin_family = AF_INET;
     tcp_addr.sin_addr.s_addr = INADDR_ANY;
     tcp_addr.sin_port = htons(TCP_PORT);
@@ -44,7 +47,7 @@ int setup_tcp_socket() {
     int opt = 1;
     setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
-    // Bind avant listen
+    // Nommage de la socket
     if (bind(tcp_socket, (struct sockaddr*)&tcp_addr, sizeof(tcp_addr)) < 0) {
         perror("Erreur bind socket TCP");
         close(tcp_socket);
@@ -63,9 +66,11 @@ int setup_tcp_socket() {
 
 // Fonction pour gérer l'upload d'un fichier
 void handle_file_upload(int client_socket, const char* command) {
+
     // Extraire le nom du fichier de la commande
+
     const char* filename = command + strlen(UPLOAD_CMD) + 1;
-    while (*filename == ' ') filename++; // Ignorer les espaces
+    //while (*filename == ' ') filename++; // Ignorer les espaces
 
     if (strlen(filename) == 0) {
         printf("Erreur: Nom de fichier manquant\n");
@@ -224,15 +229,7 @@ int main(int argc, char *argv[]) {
     printf("Début programme serveur\n");
 
     // Création du dossier uploads s'il n'existe pas
-    if (mkdir("uploads", 0777) == 0) {
-        printf("Dossier 'uploads' créé avec succès\n");
-    } else if (errno != EEXIST) {
-        // Si l'erreur n'est pas que le dossier existe déjà
-        perror("Erreur création dossier uploads");
-        exit(EXIT_FAILURE);
-    } else {
-        printf("Dossier 'uploads' existe déjà\n");
-    }
+    mkdir("uploads", 0777);
 
     // Création de la socket UDP
     dS_udp = socket(PF_INET, SOCK_DGRAM, 0);
@@ -257,7 +254,8 @@ int main(int argc, char *argv[]) {
         close(dS_udp);  // Le fils n'a pas besoin de la socket UDP
         handle_file_transfers(dS_tcp);
         exit(0);
-    } else if (pid < 0) {
+    }
+    else if (pid < 0) {
         perror("Erreur fork");
         close(dS_udp);
         close(dS_tcp);
@@ -274,13 +272,14 @@ int main(int argc, char *argv[]) {
 
     // Nommage de la socket UDP uniquement (TCP est déjà bind dans setup_tcp_socket)
     if (bind(dS_udp, (struct sockaddr*) &aL, sizeof(aL)) < 0) {
-        perror("Erreur bind socket UDP");
+        perror("Erreur nommage socket UDP");
         close(dS_udp);
         close(dS_tcp);
         exit(EXIT_FAILURE);
     }
 
     // Création du dictionnaire des utilisateurs (pour les recherches par nom)
+    // pour le moment
     SimpleDict *users_dict = dict_create();
     if (!users_dict) {
         perror("Erreur création dictionnaire");
@@ -306,13 +305,13 @@ int main(int argc, char *argv[]) {
     
     // Boucle principale
     char buffer[BUFFER_SIZE];
-    struct sockaddr_in aE;
+    struct sockaddr_in adress_socket;
     socklen_t lgA = sizeof(struct sockaddr_in);
     
     while (1) {
         // Réception message
         memset(buffer, 0, BUFFER_SIZE);
-        int recvLen = recvfrom(dS_udp, buffer, BUFFER_SIZE-1, 0, (struct sockaddr*) &aE, &lgA);
+        int recvLen = recvfrom(dS_udp, buffer, BUFFER_SIZE-1, 0, (struct sockaddr*) &adress_socket, &lgA);
         
         if (recvLen < 0) {
             perror("Erreur réception");
@@ -323,9 +322,9 @@ int main(int argc, char *argv[]) {
         
         // Extraire l'adresse IP de l'expéditeur pour l'affichage
         char client_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(aE.sin_addr), client_ip, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, &(adress_socket.sin_addr), client_ip, INET_ADDRSTRLEN);
         
-        printf("Message reçu de %s:%d: %s\n", client_ip, ntohs(aE.sin_port), buffer);
+        printf("Message reçu de %s:%d: %s\n", client_ip, ntohs(adress_socket.sin_port), buffer);
         
         // Vérifier si c'est une commande login
         if (strncmp(buffer, LOGIN_CMD, strlen(LOGIN_CMD)) == 0) {
@@ -342,7 +341,7 @@ int main(int argc, char *argv[]) {
                     // Envoyer message d'erreur
                     char response[BUFFER_SIZE];
                     sprintf(response, "Erreur: Nom d'utilisateur '%s' déjà utilisé.", username);
-                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &adress_socket, lgA);
                 } else {
                     // Nouvel utilisateur - ajouter au dictionnaire avec un index dans le tableau
                     char index_str[10];
@@ -352,15 +351,15 @@ int main(int argc, char *argv[]) {
                     // Stocker les informations complètes du client
                     if (client_count < MAX_USERS) {
                         strncpy(clients[client_count].username, username, sizeof(clients[client_count].username) - 1);
-                        clients[client_count].addr = aE;  // Copie complète de la structure d'adresse
+                        clients[client_count].addr = adress_socket;  // Copie complète de la structure d'adresse
                         clients[client_count].active = 1;
                         
-                        printf("Nouvel utilisateur enregistré: %s @ %s:%d (index: %d)\n", username, client_ip, ntohs(aE.sin_port), client_count);
+                        printf("Nouvel utilisateur enregistré: %s @ %s:%d (index: %d)\n", username, client_ip, ntohs(adress_socket.sin_port), client_count);
                         
                         // Envoyer confirmation
                         char response[BUFFER_SIZE];
                         sprintf(response, "Bienvenue %s! Vous êtes connecté.", username);
-                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &adress_socket, lgA);
                         
                         client_count++;
                     } else {
@@ -368,13 +367,13 @@ int main(int argc, char *argv[]) {
                         dict_remove(users_dict, username);  // Annuler l'insertion dans le dictionnaire
                         
                         char response[BUFFER_SIZE] = "Erreur: Limite d'utilisateurs atteinte.";
-                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &adress_socket, lgA);
                     }
                 }
             } else {
                 // Username vide
                 char response[BUFFER_SIZE] = "Erreur: Veuillez fournir un nom d'utilisateur valide.";
-                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &adress_socket, lgA);
             }
         } 
         // Vérifier si c'est un message à rediriger
@@ -422,8 +421,8 @@ int main(int argc, char *argv[]) {
                                 // Chercher l'expéditeur parmi les clients connectés
                                 for (int i = 0; i < client_count; i++) {
                                     if (clients[i].active && 
-                                        clients[i].addr.sin_addr.s_addr == aE.sin_addr.s_addr && 
-                                        clients[i].addr.sin_port == aE.sin_port) {
+                                        clients[i].addr.sin_addr.s_addr == adress_socket.sin_addr.s_addr && 
+                                        clients[i].addr.sin_port == adress_socket.sin_port) {
                                         strncpy(sender_username, clients[i].username, BUFFER_SIZE - 1);
                                         break;
                                     }
@@ -443,7 +442,7 @@ int main(int argc, char *argv[]) {
                                     // Informer l'expéditeur de l'échec
                                     char error_msg[BUFFER_SIZE];
                                     sprintf(error_msg, "Erreur d'envoi du message à %s.", dest_username);
-                                    sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                                    sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
                                 } else {
                                     char dest_ip[INET_ADDRSTRLEN];
                                     inet_ntop(AF_INET, &(dest_addr.sin_addr), dest_ip, INET_ADDRSTRLEN);
@@ -452,34 +451,34 @@ int main(int argc, char *argv[]) {
                                     // Confirmer l'envoi à l'expéditeur
                                     char confirm_msg[BUFFER_SIZE];
                                     sprintf(confirm_msg, "Message envoyé à %s.", dest_username);
-                                    sendto(dS_udp, confirm_msg, strlen(confirm_msg), 0, (struct sockaddr*) &aE, lgA);
+                                    sendto(dS_udp, confirm_msg, strlen(confirm_msg), 0, (struct sockaddr*) &adress_socket, lgA);
                                 }
                             } else {
                                 // Destinataire inactif ou index invalide
                                 char error_msg[BUFFER_SIZE];
                                 sprintf(error_msg, "Erreur: Utilisateur '%s' n'est plus connecté.", dest_username);
-                                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
                             }
                         } else {
                             // Destinataire introuvable
                             char error_msg[BUFFER_SIZE];
                             sprintf(error_msg, "Erreur: Utilisateur '%s' introuvable.", dest_username);
-                            sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                            sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
                         }
                     } else {
                         // Nom de destinataire invalide
                         char error_msg[BUFFER_SIZE] = "Erreur: Format de destinataire invalide.";
-                        sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
                     }
                 } else {
                     // Pas d'espace après le destinataire
                     char error_msg[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@message &destinataire message'.";
-                    sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
                 }
             } else {
                 // Format de message invalide, pas d'esperluette
                 char error_msg[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@message &destinataire message'.";
-                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
             }
         } 
 
@@ -494,8 +493,8 @@ int main(int argc, char *argv[]) {
                 char sender_username[BUFFER_SIZE] = "inconnu";
                 for (int i = 0; i < client_count; i++) {
                     if (clients[i].active && 
-                        clients[i].addr.sin_addr.s_addr == aE.sin_addr.s_addr && 
-                        clients[i].addr.sin_port == aE.sin_port) {
+                        clients[i].addr.sin_addr.s_addr == adress_socket.sin_addr.s_addr && 
+                        clients[i].addr.sin_port == adress_socket.sin_port) {
                         strncpy(sender_username, clients[i].username, BUFFER_SIZE - 1);
                         break;
                     }
@@ -504,20 +503,39 @@ int main(int argc, char *argv[]) {
                 // Envoyer le port TCP au client via la socket UDP
                 char upload_response[BUFFER_SIZE];
                 sprintf(upload_response, "UPLOAD_PORT %d", TCP_PORT);
-                sendto(dS_udp, upload_response, strlen(upload_response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, upload_response, strlen(upload_response), 0, (struct sockaddr*) &adress_socket, lgA);
                 
                 printf("Notification d'upload envoyée à %s pour le fichier %s\n", sender_username, filename);
             } else {
                 char error_msg[BUFFER_SIZE] = "Erreur: Veuillez spécifier un nom de fichier.";
-                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
             }
-        } else {
+        } 
+        else if (strncmp(buffer, HELP_CMD, strlen(HELP_CMD)) == 0) {
+    FILE *file = fopen("commandes.txt", "r");
+    if (file == NULL) {
+        char *error_msg = "Erreur : impossible d'ouvrir le fichier commandes.txt\n";
+        sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
+    } else {
+        // Lire tout le fichier et envoyer d’un coup (si raisonnable)
+        char file_contents[4096] = "";  // assez grand pour ton fichier d'aide
+        char line[512];
+        while (fgets(line, sizeof(line), file)) {
+            strcat(file_contents, line);  // concatène chaque ligne
+        }
+        fclose(file);
+        sendto(dS_udp, file_contents, strlen(file_contents), 0, (struct sockaddr*) &adress_socket, lgA);
+    }
+}
+
+        
+        else {
             // Message standard, format non reconnu
             printf("Message standard reçu\n");
             
             // Informer l'expéditeur que le format du message n'est pas reconnu
             char help_msg[BUFFER_SIZE] = "Format non reconnu. Utilisez '@login username' pour vous connecter, '@message &destinataire message' pour envoyer un message ou '@upload filename' pour envoyer un fichier.";
-            sendto(dS_udp, help_msg, strlen(help_msg), 0, (struct sockaddr*) &aE, lgA);
+            sendto(dS_udp, help_msg, strlen(help_msg), 0, (struct sockaddr*) &adress_socket, lgA);
         }
     }
     
