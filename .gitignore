@@ -1,6 +1,0 @@
-client
-client.o
-dict.o
-globalVariables.o
-server
-server.o

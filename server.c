@@ -4,12 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include "globalVariables.h"
 #include "dict.h"
+#include "chatroom.h"
 
 #define BUFFER_SIZE 1000
-#define LOGIN_CMD "@login"  //format: "@login username"
-#define MESSAGE_CMD "@message" //format: "@message &destinataire message"
 #define MAX_USERS 100  // Maximum d'utilisateurs simultanés
 
 // Structure pour stocker les informations complètes d'un client
@@ -17,13 +17,93 @@ typedef struct {
     char username[50];               // Nom d'utilisateur
     struct sockaddr_in addr;         // Structure d'adresse complète
     int active;                      // Flag pour indiquer si l'entrée est active
+    int joined_rooms[MAX_ROOMS];     // Salles auxquelles le client a adhéré
+    int room_count;                  // Nombre de salles auxquelles le client a adhéré
 } ClientInfo;
 
+// Variables globales
+int dS;                              // Socket du serveur
+SimpleDict *users_dict;              // Dictionnaire des utilisateurs
+ClientInfo *clients;                 // Tableau des informations clients
+int client_count = 0;                // Nombre de clients
+ChatRoom *rooms[MAX_ROOMS];          // Tableau des salles de chat
+int room_count = 0;                  // Nombre de salles de chat
+SimpleDict *room_dict;               // Dictionnaire des salles de chat (nom -> index)
+
+// Gestionnaire de signal pour fermeture propre
+void handle_signal(int sig) {
+    printf("\nFermeture du serveur (signal %d)...\n", sig);
+    
+    // Libération des ressources
+    for (int i = 0; i < room_count; i++) {
+        chatroom_free(rooms[i]);
+    }
+    dict_free(users_dict);
+    dict_free(room_dict);
+    free(clients);
+    close(dS);
+    
+    exit(EXIT_SUCCESS);
+}
+
+// Fonction pour diffuser un message à tous les membres d'une salle
+void broadcast_to_room(int room_index, const char *message, const char *sender_username, struct sockaddr_in *sender_addr) {
+    if (room_index < 0 || room_index >= room_count || !rooms[room_index]) {
+        return;
+    }
+    
+    ChatRoom *room = rooms[room_index];
+    char forward_msg[BUFFER_SIZE];
+    sprintf(forward_msg, "[%s] %s: %s", room->name, sender_username, message);
+    
+    // Parcourir tous les membres de la salle
+    for (int i = 0; i < room->member_count; i++) {
+        int member_index = room->member_indices[i];
+        
+        // Ne pas envoyer au client qui a envoyé le message
+        if (clients[member_index].active && 
+            (sender_addr == NULL ||
+             clients[member_index].addr.sin_addr.s_addr != sender_addr->sin_addr.s_addr ||
+             clients[member_index].addr.sin_port != sender_addr->sin_port)) {
+            
+            // Envoyer le message au membre
+            if (sendto(dS, forward_msg, strlen(forward_msg), 0,
+                     (struct sockaddr*) &clients[member_index].addr,
+                     sizeof(struct sockaddr_in)) < 0) {
+                perror("Erreur envoi message à un membre");
+            }
+        }
+    }
+}
+
+// Fonction pour trouver l'index d'un client à partir de son adresse
+int find_client_index(struct sockaddr_in *addr) {
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i].active &&
+            clients[i].addr.sin_addr.s_addr == addr->sin_addr.s_addr &&
+            clients[i].addr.sin_port == addr->sin_port) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Fonction pour trouver la salle par son nom
+int find_room_by_name(const char *room_name) {
+    const char *index_str = dict_get(room_dict, room_name);
+    if (!index_str) return -1;
+    return atoi(index_str);
+}
+
 int main(int argc, char *argv[]) {
-    printf("Début programme récepteur UDP\n");
+    printf("Début programme serveur UDP\n");
+
+    // Configuration du gestionnaire de signaux
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
 
     // Création de la socket UDP
-    int dS = socket(PF_INET, SOCK_DGRAM, 0);
+    dS = socket(PF_INET, SOCK_DGRAM, 0);
     if (dS == -1) {
         perror("Erreur création socket");
         exit(EXIT_FAILURE);
@@ -44,27 +124,36 @@ int main(int argc, char *argv[]) {
     printf("Socket Nommée sur port %d\n", serverPort);
 
     // Création du dictionnaire des utilisateurs (pour les recherches par nom)
-    SimpleDict *users_dict = dict_create();
+    users_dict = dict_create();
     if (!users_dict) {
-        perror("Erreur création dictionnaire");
+        perror("Erreur création dictionnaire utilisateurs");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Création du dictionnaire des salles (pour les recherches par nom)
+    room_dict = dict_create();
+    if (!room_dict) {
+        perror("Erreur création dictionnaire salles");
+        dict_free(users_dict);
         exit(EXIT_FAILURE);
     }
     
     // Création du tableau des informations clients
-    ClientInfo *clients = malloc(MAX_USERS * sizeof(ClientInfo));
+    clients = malloc(MAX_USERS * sizeof(ClientInfo));
     if (!clients) {
         perror("Erreur allocation mémoire pour clients");
         dict_free(users_dict);
+        dict_free(room_dict);
         exit(EXIT_FAILURE);
     }
     
     // Initialisation du tableau des clients
     for (int i = 0; i < MAX_USERS; i++) {
         clients[i].active = 0;
+        clients[i].room_count = 0;
     }
     
-    int client_count = 0;
-    printf("Structures clients créées\n");
+    printf("Structures clients et salles créées\n");
     printf("En attente de connexions...\n");
     
     // Boucle principale
@@ -117,6 +206,7 @@ int main(int argc, char *argv[]) {
                         strncpy(clients[client_count].username, username, sizeof(clients[client_count].username) - 1);
                         clients[client_count].addr = aE;  // Copie complète de la structure d'adresse
                         clients[client_count].active = 1;
+                        clients[client_count].room_count = 0;
                         
                         printf("Nouvel utilisateur enregistré: %s @ %s:%d (index: %d)\n", 
                               username, client_ip, ntohs(aE.sin_port), client_count);
@@ -247,18 +337,334 @@ int main(int argc, char *argv[]) {
                 char error_msg[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@message &destinataire message'.";
                 sendto(dS, error_msg, strlen(error_msg), 0, (struct sockaddr*) &aE, lgA);
             }
+        }
+        // Commande pour créer une salle
+        else if (strncmp(buffer, CREATEROOM_CMD, strlen(CREATEROOM_CMD)) == 0) {
+            // Format attendu: "@createroom nom_salle max_membres"
+            char *params = buffer + strlen(CREATEROOM_CMD) + 1; // +1 pour l'espace
+            
+            char room_name[MAX_ROOM_NAME_LENGTH] = {0};
+            int max_members = 10; // Valeur par défaut
+            
+            // Extraire le nom de la salle et le nombre max de membres
+            if (sscanf(params, "%s %d", room_name, &max_members) >= 1) {
+                // Vérifier que max_members est au moins 1
+                if (max_members <= 0) {
+                    char response[BUFFER_SIZE] = "Erreur: Le nombre maximum de membres doit être au moins 1.";
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    continue;
+                }
+                
+                // Vérifier si la salle existe déjà
+                if (dict_get(room_dict, room_name) != NULL) {
+                    char response[BUFFER_SIZE];
+                    sprintf(response, "Erreur: Une salle nommée '%s' existe déjà.", room_name);
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                } else if (room_count >= MAX_ROOMS) {
+                    // Nombre maximum de salles atteint
+                    char response[BUFFER_SIZE] = "Erreur: Nombre maximum de salles atteint.";
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                } else {
+                    // Créer la nouvelle salle
+                    ChatRoom *new_room = chatroom_create(room_name, max_members);
+                    if (!new_room) {
+                        char response[BUFFER_SIZE] = "Erreur: Impossible de créer la salle.";
+                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    } else {
+                        // Ajouter la salle au tableau et au dictionnaire
+                        rooms[room_count] = new_room;
+                        
+                        char index_str[10];
+                        sprintf(index_str, "%d", room_count);
+                        dict_insert(room_dict, room_name, index_str);
+                        
+                        // Trouver le client qui a créé la salle
+                        int client_index = find_client_index(&aE);
+                        if (client_index >= 0) {
+                            // Ajouter le créateur comme premier membre
+                            chatroom_add_member(new_room, client_index);
+                            
+                            // Ajouter la salle à la liste des salles du client
+                            if (clients[client_index].room_count < MAX_ROOMS) {
+                                clients[client_index].joined_rooms[clients[client_index].room_count++] = room_count;
+                            }
+                            
+                            char response[BUFFER_SIZE];
+                            sprintf(response, "Salle '%s' créée avec succès et vous y avez été ajouté.", room_name);
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        } else {
+                            char response[BUFFER_SIZE];
+                            sprintf(response, "Salle '%s' créée avec succès.", room_name);
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        }
+                        
+                        room_count++;
+                    }
+                }
+            } else {
+                // Format invalide
+                char response[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@createroom nom_salle max_membres'.";
+                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            }
+        }
+        // Commande pour rejoindre une salle
+        else if (strncmp(buffer, JOINROOM_CMD, strlen(JOINROOM_CMD)) == 0) {
+            // Format attendu: "@joinroom nom_salle"
+            char *room_name = buffer + strlen(JOINROOM_CMD) + 1; // +1 pour l'espace
+            
+            // Chercher la salle
+            int room_index = find_room_by_name(room_name);
+            if (room_index < 0) {
+                char response[BUFFER_SIZE];
+                sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
+                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            } else {
+                // Trouver le client qui souhaite rejoindre
+                int client_index = find_client_index(&aE);
+                if (client_index < 0) {
+                    char response[BUFFER_SIZE] = "Erreur: Vous n'êtes pas connecté.";
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                } else {
+                    // Vérifier si le client est déjà membre
+                    if (chatroom_is_member(rooms[room_index], client_index)) {
+                        char response[BUFFER_SIZE];
+                        sprintf(response, "Vous êtes déjà membre de la salle '%s'.", room_name);
+                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    } else if (chatroom_is_full(rooms[room_index])) {
+                        char response[BUFFER_SIZE];
+                        sprintf(response, "Erreur: La salle '%s' est pleine.", room_name);
+                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    } else {
+                        // Ajouter le client à la salle
+                        chatroom_add_member(rooms[room_index], client_index);
+                        
+                        // Ajouter la salle à la liste des salles du client
+                        if (clients[client_index].room_count < MAX_ROOMS) {
+                            clients[client_index].joined_rooms[clients[client_index].room_count++] = room_index;
+                            
+                            char response[BUFFER_SIZE];
+                            sprintf(response, "Vous avez rejoint la salle '%s'.", room_name);
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            
+                            // Notifier les autres membres
+                            char notification[BUFFER_SIZE];
+                            sprintf(notification, "%s a rejoint la salle.", clients[client_index].username);
+                            broadcast_to_room(room_index, notification, "Serveur", &aE);
+                        } else {
+                            chatroom_remove_member(rooms[room_index], client_index);
+                            
+                            char response[BUFFER_SIZE] = "Erreur: Vous avez rejoint trop de salles.";
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        }
+                    }
+                }
+            }
+        }
+        // Commande pour quitter une salle
+        else if (strncmp(buffer, LEAVEROOM_CMD, strlen(LEAVEROOM_CMD)) == 0) {
+            // Format attendu: "@leaveroom nom_salle"
+            char *room_name = buffer + strlen(LEAVEROOM_CMD) + 1; // +1 pour l'espace
+            
+            // Chercher la salle
+            int room_index = find_room_by_name(room_name);
+            if (room_index < 0) {
+                char response[BUFFER_SIZE];
+                sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
+                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            } else {
+                // Trouver le client qui souhaite quitter
+                int client_index = find_client_index(&aE);
+                if (client_index < 0) {
+                    char response[BUFFER_SIZE] = "Erreur: Vous n'êtes pas connecté.";
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                } else {
+                    // Vérifier si le client est membre
+                    if (!chatroom_is_member(rooms[room_index], client_index)) {
+                        char response[BUFFER_SIZE];
+                        sprintf(response, "Erreur: Vous n'êtes pas membre de la salle '%s'.", room_name);
+                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    } else {
+                        // Retirer le client de la salle
+                        chatroom_remove_member(rooms[room_index], client_index);
+                        
+                        // Retirer la salle de la liste des salles du client
+                        for (int i = 0; i < clients[client_index].room_count; i++) {
+                            if (clients[client_index].joined_rooms[i] == room_index) {
+                                // Décaler les éléments suivants
+                                for (int j = i; j < clients[client_index].room_count - 1; j++) {
+                                    clients[client_index].joined_rooms[j] = clients[client_index].joined_rooms[j + 1];
+                                }
+                                clients[client_index].room_count--;
+                                break;
+                            }
+                        }
+                        
+                        char response[BUFFER_SIZE];
+                        sprintf(response, "Vous avez quitté la salle '%s'.", room_name);
+                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        
+                        // Notifier les autres membres
+                        char notification[BUFFER_SIZE];
+                        sprintf(notification, "%s a quitté la salle.", clients[client_index].username);
+                        broadcast_to_room(room_index, notification, "Serveur", &aE);
+                    }
+                }
+            }
+        }
+        // Commande pour lister les salles
+        else if (strncmp(buffer, LISTROOMS_CMD, strlen(LISTROOMS_CMD)) == 0) {
+            if (room_count == 0) {
+                char response[BUFFER_SIZE] = "Aucune salle n'existe actuellement.";
+                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            } else {
+                char response[BUFFER_SIZE] = "Liste des salles disponibles:\n";
+                
+                for (int i = 0; i < room_count; i++) {
+                    if (rooms[i] && rooms[i]->active) {
+                        char room_info[100];
+                        sprintf(room_info, "%s (%d/%d membres)\n", 
+                                rooms[i]->name, 
+                                chatroom_get_member_count(rooms[i]), 
+                                chatroom_get_max_members(rooms[i]));
+                        
+                        // S'assurer qu'il y a assez d'espace dans la réponse
+                        if (strlen(response) + strlen(room_info) < BUFFER_SIZE - 1) {
+                            strcat(response, room_info);
+                        }
+                    }
+                }
+                
+                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            }
+        }
+        // Commande pour lister les membres d'une salle
+        else if (strncmp(buffer, LISTMEMBERS_CMD, strlen(LISTMEMBERS_CMD)) == 0) {
+            // Format attendu: "@listmembers nom_salle"
+            char *room_name = buffer + strlen(LISTMEMBERS_CMD) + 1; // +1 pour l'espace
+            
+            // Chercher la salle
+            int room_index = find_room_by_name(room_name);
+            if (room_index < 0) {
+                char response[BUFFER_SIZE];
+                sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
+                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            } else {
+                ChatRoom *room = rooms[room_index];
+                
+                if (chatroom_get_member_count(room) == 0) {
+                    char response[BUFFER_SIZE];
+                    sprintf(response, "La salle '%s' ne contient aucun membre.", room_name);
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                } else {
+                    char response[BUFFER_SIZE];
+                    sprintf(response, "Membres de la salle '%s':\n", room_name);
+                    
+                    for (int i = 0; i < room->member_count; i++) {
+                        int member_index = room->member_indices[i];
+                        
+                        char member_info[100];
+                        sprintf(member_info, "- %s\n", clients[member_index].username);
+                        
+                        // S'assurer qu'il y a assez d'espace dans la réponse
+                        if (strlen(response) + strlen(member_info) < BUFFER_SIZE - 1) {
+                            strcat(response, member_info);
+                        }
+                    }
+                    
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                }
+            }
+        }
+        // Commande pour envoyer un message à une salle
+        else if (strncmp(buffer, ROOMSG_CMD, strlen(ROOMSG_CMD)) == 0) {
+            // Format attendu: "@roomsg nom_salle message"
+            char *params = buffer + strlen(ROOMSG_CMD) + 1; // +1 pour l'espace
+            
+            // Extraire le nom de la salle et le message
+            char room_name[MAX_ROOM_NAME_LENGTH] = {0};
+            char *message_content = NULL;
+            
+            // Trouver le premier espace après le nom de la salle
+            char *space_after_room = strchr(params, ' ');
+            if (space_after_room) {
+                size_t room_name_len = space_after_room - params;
+                
+                if (room_name_len > 0 && room_name_len < MAX_ROOM_NAME_LENGTH) {
+                    // Extraire le nom de la salle
+                    strncpy(room_name, params, room_name_len);
+                    room_name[room_name_len] = '\0';
+                    
+                    // Extraire le contenu du message
+                    message_content = space_after_room + 1;
+                    
+                    // Chercher la salle
+                    int room_index = find_room_by_name(room_name);
+                    if (room_index < 0) {
+                        char response[BUFFER_SIZE];
+                        sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
+                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    } else {
+                        // Trouver le client qui envoie le message
+                        int client_index = find_client_index(&aE);
+                        if (client_index < 0) {
+                            char response[BUFFER_SIZE] = "Erreur: Vous n'êtes pas connecté.";
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        } else {
+                            // Vérifier si le client est membre de la salle
+                            if (!chatroom_is_member(rooms[room_index], client_index)) {
+                                char response[BUFFER_SIZE];
+                                sprintf(response, "Erreur: Vous n'êtes pas membre de la salle '%s'.", room_name);
+                                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            } else {
+                                // Diffuser le message à tous les membres de la salle
+                                broadcast_to_room(room_index, message_content, clients[client_index].username, &aE);
+                                
+                                // Confirmer l'envoi
+                                char confirm_msg[BUFFER_SIZE];
+                                sprintf(confirm_msg, "Message envoyé à la salle '%s'.", room_name);
+                                sendto(dS, confirm_msg, strlen(confirm_msg), 0, (struct sockaddr*) &aE, lgA);
+                            }
+                        }
+                    }
+                } else {
+                    // Nom de salle invalide
+                    char response[BUFFER_SIZE] = "Erreur: Nom de salle invalide.";
+                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                }
+            } else {
+                // Format invalide
+                char response[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@roomsg nom_salle message'.";
+                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+            }
         } else {
             // Message standard, format non reconnu
             printf("Message standard reçu\n");
             
             // Informer l'expéditeur que le format du message n'est pas reconnu
-            char help_msg[BUFFER_SIZE] = "Format non reconnu. Utilisez '@login username' pour vous connecter ou '@message &destinataire message' pour envoyer un message.";
+            char help_msg[BUFFER_SIZE] = 
+                "Format non reconnu. Commandes disponibles:\n"
+                "@login username - Se connecter\n"
+                "@message &destinataire message - Envoyer un message privé\n"
+                "@createroom nom_salle max_membres - Créer une salle\n"
+                "@joinroom nom_salle - Rejoindre une salle\n"
+                "@leaveroom nom_salle - Quitter une salle\n"
+                "@listrooms - Lister les salles disponibles\n"
+                "@listmembers nom_salle - Lister les membres d'une salle\n"
+                "@roomsg nom_salle message - Envoyer un message à une salle";
+            
             sendto(dS, help_msg, strlen(help_msg), 0, (struct sockaddr*) &aE, lgA);
         }
     }
     
+    // Cette partie ne sera jamais atteinte en raison de la boucle infinie
+    // mais elle est incluse pour compléter le code
+    
     // Libération des ressources
+    for (int i = 0; i < room_count; i++) {
+        chatroom_free(rooms[i]);
+    }
     dict_free(users_dict);
+    dict_free(room_dict);
     free(clients);
     close(dS);
     
