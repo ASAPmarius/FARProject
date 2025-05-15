@@ -13,6 +13,8 @@
 
 #define BUF_SIZE 1000
 
+pthread_t tid_send, tid_recv;
+
 typedef struct {
     int sockfd;
     struct sockaddr_in servaddr;
@@ -25,6 +27,12 @@ int running = 1; // Flag pour contrôler l'exécution des threads
 void handle_signal(int sig) {
     printf("\nFermeture du client (signal %d)...\n", sig);
     running = 0;
+    
+    // Cancel both threads to force immediate exit
+    pthread_cancel(tid_send);
+    pthread_cancel(tid_recv);
+    
+    exit(EXIT_SUCCESS);  // Exit immediately
 }
 
 // Thread pour envoyer les messages saisis au clavier
@@ -163,7 +171,6 @@ int main(int argc, char *argv[]) {
     };
 
     // Lancement des threads d'envoi et de réception
-    pthread_t tid_send, tid_recv;
     if (pthread_create(&tid_send, NULL, sendThread, &arg) != 0) { //création du thread d'envoi du message
         perror("pthread_create sendThread");
         exit(EXIT_FAILURE);
