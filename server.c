@@ -30,22 +30,6 @@ ChatRoom *rooms[MAX_ROOMS];          // Tableau des salles de chat
 int room_count = 0;                  // Nombre de salles de chat
 SimpleDict *room_dict;               // Dictionnaire des salles de chat (nom -> index)
 
-// Gestionnaire de signal pour fermeture propre
-void handle_signal(int sig) {
-    printf("\nFermeture du serveur (signal %d)...\n", sig);
-    
-    // Libération des ressources
-    for (int i = 0; i < room_count; i++) {
-        chatroom_free(rooms[i]);
-    }
-    dict_free(users_dict);
-    dict_free(room_dict);
-    free(clients);
-    close(dS);
-    
-    exit(EXIT_SUCCESS);
-}
-
 // Fonction pour diffuser un message à tous les membres d'une salle
 void broadcast_to_room(int room_index, const char *message, const char *sender_username, struct sockaddr_in *sender_addr) {
     if (room_index < 0 || room_index >= room_count || !rooms[room_index]) {
@@ -93,6 +77,225 @@ int find_room_by_name(const char *room_name) {
     const char *index_str = dict_get(room_dict, room_name);
     if (!index_str) return -1;
     return atoi(index_str);
+}
+
+void save_users_to_file(const char* filename) {
+    FILE* file = fopen(filename, "w");
+    if (!file) {
+        perror("Error opening users file for writing");
+        return;
+    }
+    
+    // Iterate through the clients array and save active and inactive users
+    for (int i = 0; i < client_count; i++) {
+        fprintf(file, "%d:%s\n", i, clients[i].username);
+    }
+    
+    fclose(file);
+    printf("Users saved to %s\n", filename);
+}
+
+// Function to save rooms to file
+void save_rooms_to_file(const char* filename) {
+    FILE* file = fopen(filename, "w");
+    if (!file) {
+        perror("Error opening rooms file for writing");
+        return;
+    }
+    
+    // Save each room with its capacity and members
+    for (int i = 0; i < room_count; i++) {
+        if (rooms[i] && rooms[i]->active) {
+            // Start with room name and capacity
+            fprintf(file, "%s:%d:", rooms[i]->name, rooms[i]->max_members);
+            
+            // Add member IDs separated by commas
+            for (int j = 0; j < rooms[i]->member_count; j++) {
+                fprintf(file, "%d", rooms[i]->member_indices[j]);
+                // Add comma if not the last member
+                if (j < rooms[i]->member_count - 1) {
+                    fprintf(file, ",");
+                }
+            }
+            fprintf(file, "\n");
+        }
+    }
+    
+    fclose(file);
+    printf("Rooms saved to %s\n", filename);
+}
+
+// Function to load users from file
+void load_users_from_file(const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        // It's okay if the file doesn't exist yet
+        printf("No users file found. Starting with empty users list.\n");
+        return;
+    }
+    
+    char line[100];
+    int max_id = -1;
+    
+    // Read each line from the file
+    while (fgets(line, sizeof(line), file)) {
+        int id;
+        char username[50];
+        
+        // Parse the line in format "id:username"
+        if (sscanf(line, "%d:%49s", &id, username) == 2) {
+            // Update client_count if we find a larger ID
+            if (id > max_id) {
+                max_id = id;
+            }
+            
+            // Add to users_dict
+            char id_str[10];
+            sprintf(id_str, "%d", id);
+            dict_insert(users_dict, username, id_str);
+            
+            // Update clients array
+            if (id < MAX_USERS) {
+                strncpy(clients[id].username, username, sizeof(clients[id].username) - 1);
+                clients[id].active = 0; // Start as inactive
+                clients[id].room_count = 0;
+            }
+        }
+    }
+    
+    // Update client_count to be one more than the max ID found
+    client_count = max_id + 1;
+    
+    fclose(file);
+    printf("Loaded %d users from %s\n", client_count, filename);
+}
+
+// Function to load rooms from file
+void load_rooms_from_file(const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        // It's okay if the file doesn't exist yet
+        printf("No rooms file found. Starting with empty rooms list.\n");
+        return;
+    }
+    
+    char line[256];
+    room_count = 0;
+    
+    // Read each line from the file
+    while (fgets(line, sizeof(line), file) && room_count < MAX_ROOMS) {
+        char room_name[MAX_ROOM_NAME_LENGTH];
+        int max_members;
+        char member_ids_str[200] = "";
+        
+        // Remove newline if present
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') {
+            line[len-1] = '\0';
+        }
+        
+        // Find the first and second colon
+        char* first_colon = strchr(line, ':');
+        if (!first_colon) continue;
+        
+        char* second_colon = strchr(first_colon + 1, ':');
+        if (!second_colon) continue;
+        
+        // Extract room name
+        size_t name_len = first_colon - line;
+        if (name_len >= MAX_ROOM_NAME_LENGTH) name_len = MAX_ROOM_NAME_LENGTH - 1;
+        strncpy(room_name, line, name_len);
+        room_name[name_len] = '\0';
+        
+        // Extract max members
+        *second_colon = '\0'; // Temporarily null-terminate for atoi
+        max_members = atoi(first_colon + 1);
+        *second_colon = ':'; // Restore the colon
+        
+        // Create the room
+        ChatRoom* new_room = chatroom_create(room_name, max_members);
+        if (!new_room) continue;
+        
+        // Get the member IDs string
+        strncpy(member_ids_str, second_colon + 1, sizeof(member_ids_str) - 1);
+        
+        // Parse the member IDs
+        char* token = strtok(member_ids_str, ",");
+        while (token) {
+            int member_id = atoi(token);
+            
+            // Only add if the member ID is valid and the user exists
+            if (member_id >= 0 && member_id < client_count) {
+                chatroom_add_member(new_room, member_id);
+            }
+            
+            token = strtok(NULL, ",");
+        }
+        
+        // Add room to rooms array and dictionary
+        rooms[room_count] = new_room;
+        char index_str[10];
+        sprintf(index_str, "%d", room_count);
+        dict_insert(room_dict, room_name, index_str);
+        
+        room_count++;
+    }
+    
+    fclose(file);
+    printf("Loaded %d rooms from %s\n", room_count, filename);
+}
+
+// Gestionnaire de signal pour fermeture propre
+void handle_signal(int sig) {
+    printf("\nFermeture du serveur (signal %d)...\n", sig);
+    
+    // Save state to files
+    save_users_to_file("users.txt");
+    save_rooms_to_file("rooms.txt");
+    
+    // Libération des ressources
+    for (int i = 0; i < room_count; i++) {
+        chatroom_free(rooms[i]);
+    }
+    dict_free(users_dict);
+    dict_free(room_dict);
+    free(clients);
+    close(dS);
+    
+    exit(EXIT_SUCCESS);
+}
+
+void handle_new_user_login(const char* username, struct sockaddr_in aE, socklen_t lgA) {
+    // Nouvel utilisateur - ajouter au dictionnaire avec un index dans le tableau
+    char index_str[10];
+    sprintf(index_str, "%d", client_count);
+    dict_insert(users_dict, username, index_str);
+    
+    // Stocker les informations complètes du client
+    if (client_count < MAX_USERS) {
+        strncpy(clients[client_count].username, username, sizeof(clients[client_count].username) - 1);
+        clients[client_count].addr = aE;  // Copie complète de la structure d'adresse
+        clients[client_count].active = 1;
+        clients[client_count].room_count = 0;
+        
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(aE.sin_addr), client_ip, INET_ADDRSTRLEN);
+        printf("Nouvel utilisateur enregistré: %s @ %s:%d (index: %d)\n", 
+              username, client_ip, ntohs(aE.sin_port), client_count);
+        
+        // Envoyer confirmation
+        char response[BUFFER_SIZE];
+        sprintf(response, "Bienvenue %s! Vous êtes connecté.", username);
+        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+        
+        client_count++;
+    } else {
+        // Limite d'utilisateurs atteinte
+        dict_remove(users_dict, username);  // Annuler l'insertion dans le dictionnaire
+        
+        char response[BUFFER_SIZE] = "Erreur: Limite d'utilisateurs atteinte.";
+        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -152,6 +355,9 @@ int main(int argc, char *argv[]) {
         clients[i].active = 0;
         clients[i].room_count = 0;
     }
+
+    load_users_from_file("users.txt");
+    load_rooms_from_file("rooms.txt");
     
     printf("Structures clients et salles créées\n");
     printf("En attente de connexions...\n");
@@ -187,43 +393,44 @@ int main(int argc, char *argv[]) {
             // Vérifier si le username est valide (non vide)
             if (strlen(username) > 0) {
                 // Vérifier si l'utilisateur existe déjà
-                if (dict_get(users_dict, username) != NULL) {
-                    // L'utilisateur existe déjà
-                    printf("Utilisateur déjà existant: %s\n", username);
+                const char* existing_index_str = dict_get(users_dict, username);
+                
+                if (existing_index_str != NULL) {
+                    // L'utilisateur existe déjà dans notre dictionnaire
+                    int existing_index = atoi(existing_index_str);
                     
-                    // Envoyer message d'erreur
-                    char response[BUFFER_SIZE];
-                    sprintf(response, "Erreur: Nom d'utilisateur '%s' déjà utilisé.", username);
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
-                } else {
-                    // Nouvel utilisateur - ajouter au dictionnaire avec un index dans le tableau
-                    char index_str[10];
-                    sprintf(index_str, "%d", client_count);
-                    dict_insert(users_dict, username, index_str);
-                    
-                    // Stocker les informations complètes du client
-                    if (client_count < MAX_USERS) {
-                        strncpy(clients[client_count].username, username, sizeof(clients[client_count].username) - 1);
-                        clients[client_count].addr = aE;  // Copie complète de la structure d'adresse
-                        clients[client_count].active = 1;
-                        clients[client_count].room_count = 0;
-                        
-                        printf("Nouvel utilisateur enregistré: %s @ %s:%d (index: %d)\n", 
-                              username, client_ip, ntohs(aE.sin_port), client_count);
-                        
-                        // Envoyer confirmation
-                        char response[BUFFER_SIZE];
-                        sprintf(response, "Bienvenue %s! Vous êtes connecté.", username);
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
-                        
-                        client_count++;
+                    if (existing_index >= 0 && existing_index < client_count) {
+                        if (clients[existing_index].active) {
+                            // L'utilisateur est déjà connecté
+                            printf("Utilisateur déjà connecté: %s\n", username);
+                            
+                            // Envoyer message d'erreur
+                            char response[BUFFER_SIZE];
+                            sprintf(response, "Erreur: Nom d'utilisateur '%s' déjà utilisé.", username);
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        } else {
+                            // Réactiver l'utilisateur existant
+                            clients[existing_index].active = 1;
+                            clients[existing_index].addr = aE;  // Mettre à jour l'adresse
+                            
+                            char client_ip[INET_ADDRSTRLEN];
+                            inet_ntop(AF_INET, &(aE.sin_addr), client_ip, INET_ADDRSTRLEN);
+                            printf("Utilisateur réactivé: %s @ %s:%d (index: %d)\n", 
+                                username, client_ip, ntohs(aE.sin_port), existing_index);
+                            
+                            // Envoyer confirmation
+                            char response[BUFFER_SIZE];
+                            sprintf(response, "Bienvenue de retour %s! Vous êtes connecté.", username);
+                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        }
                     } else {
-                        // Limite d'utilisateurs atteinte
-                        dict_remove(users_dict, username);  // Annuler l'insertion dans le dictionnaire
-                        
-                        char response[BUFFER_SIZE] = "Erreur: Limite d'utilisateurs atteinte.";
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        // Index invalide, traiter comme nouvel utilisateur
+                        // (ne devrait pas arriver, mais au cas où)
+                        handle_new_user_login(username, aE, lgA);
                     }
+                } else {
+                    // Nouvel utilisateur
+                    handle_new_user_login(username, aE, lgA);
                 }
             } else {
                 // Username vide
