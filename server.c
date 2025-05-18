@@ -17,8 +17,8 @@
 #define UPLOAD_CMD "@upload"
 #define DOWNLOAD_CMD "@download"
 #define HELP_CMD "@help"
-#define TCP_PORT 8888
 #define MAX_USERS 100
+#define TCP_PORT 8888
 
 // Structure pour stocker les informations complètes d'un client
 typedef struct {
@@ -45,28 +45,24 @@ int setup_tcp_socket() {
 
     // Permettre la réutilisation de l'adresse
     int opt = 1;
-    setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    
+    setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));  
     // Nommage de la socket
     if (bind(tcp_socket, (struct sockaddr*)&tcp_addr, sizeof(tcp_addr)) < 0) {
         perror("Erreur bind socket TCP");
         close(tcp_socket);
         return -1;
     }
-
     if (listen(tcp_socket, 5) < 0) {
         perror("Erreur listen socket TCP");
         close(tcp_socket);
         return -1;
     }
-
     printf("Socket TCP écoutant sur le port %d\n", TCP_PORT);
     return tcp_socket;
 }
 
 // Fonction pour gérer l'upload d'un fichier
 void handle_file_upload(int client_socket, const char* command) {
-
     // Extraire le nom du fichier de la commande
 
     const char* filename = command + strlen(UPLOAD_CMD) + 1;
@@ -80,11 +76,7 @@ void handle_file_upload(int client_socket, const char* command) {
     // Vérifier que le dossier uploads existe
     struct stat st = {0};
     if (stat("uploads", &st) == -1) {
-        if (mkdir("uploads", 0777) == -1) {
-            printf("Erreur: Impossible de créer le dossier uploads (errno: %d)\n", errno);
-            perror("mkdir");
-            return;
-        }
+        mkdir("uploads", 0777);
         printf("Dossier uploads créé\n");
     }
 
@@ -104,7 +96,7 @@ void handle_file_upload(int client_socket, const char* command) {
     char buffer[FILE_BUFFER_SIZE];
     ssize_t bytes_received;
     size_t total_received = 0;
-
+    
     while ((bytes_received = recv(client_socket, buffer, FILE_BUFFER_SIZE, 0)) > 0) {
         fwrite(buffer, 1, bytes_received, file);
         total_received += bytes_received;
@@ -159,11 +151,11 @@ void handle_file_download(int client_socket, const char* filename) {
 
     printf("Envoi du fichier %s (taille: %ld octets)\n", filename, file_size);
 
-    //Envoyer un message de succès avant le contenu du fichier
+    // Envoyer un message de succès avant le contenu du fichier
     char success_msg[] = "FILE_SEND_START";
     send(client_socket, success_msg, strlen(success_msg), 0);
 
-    // Petit délai pour s'assurer que le message de succès est bien reçu
+    // Petit délai pour s'assurer que le client est prêt
     usleep(100000);  // 100ms
 
     // Envoyer le contenu du fichier
@@ -270,7 +262,7 @@ int main(int argc, char *argv[]) {
     aL.sin_addr.s_addr = INADDR_ANY;
     aL.sin_port = htons(serverPort);
 
-    // Nommage de la socket UDP uniquement (TCP est déjà bind dans setup_tcp_socket)
+    // Nommage de la socket UDP uniquement
     if (bind(dS_udp, (struct sockaddr*) &aL, sizeof(aL)) < 0) {
         perror("Erreur nommage socket UDP");
         close(dS_udp);
@@ -484,7 +476,7 @@ int main(int argc, char *argv[]) {
 
         // Traitement de la commande d'upload de fichier
         else if (strncmp(buffer, UPLOAD_CMD, strlen(UPLOAD_CMD)) == 0) {
-            // Format attendu: "@upload filename"
+        
             char *filename = buffer + strlen(UPLOAD_CMD) + 1;
             while (*filename == ' ') filename++; // Ignorer les espaces
 
@@ -506,27 +498,29 @@ int main(int argc, char *argv[]) {
                 sendto(dS_udp, upload_response, strlen(upload_response), 0, (struct sockaddr*) &adress_socket, lgA);
                 
                 printf("Notification d'upload envoyée à %s pour le fichier %s\n", sender_username, filename);
-            } else {
-                char error_msg[BUFFER_SIZE] = "Erreur: Veuillez spécifier un nom de fichier.";
+            } 
+            else {
+                char error_msg[BUFFER_SIZE] = "Format attendu: '@upload filename'";
                 sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
             }
         } 
         else if (strncmp(buffer, HELP_CMD, strlen(HELP_CMD)) == 0) {
-    FILE *file = fopen("commandes.txt", "r");
-    if (file == NULL) {
-        char *error_msg = "Erreur : impossible d'ouvrir le fichier commandes.txt\n";
-        sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
-    } else {
-        // Lire tout le fichier et envoyer d’un coup (si raisonnable)
-        char file_contents[4096] = "";  // assez grand pour ton fichier d'aide
-        char line[512];
-        while (fgets(line, sizeof(line), file)) {
-            strcat(file_contents, line);  // concatène chaque ligne
+            FILE *file = fopen("commandes.txt", "r");
+            if (file == NULL) {
+                char *error_msg = "Erreur : impossible d'ouvrir le fichier commandes.txt\n";
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
+            } 
+            else {
+                // Lire tout le fichier et envoyer d’un coup (si raisonnable)
+                char file_contents[4096] = "";  // assez grand pour ton fichier d'aide
+                char line[512];
+                while (fgets(line, sizeof(line), file)) {
+                    strcat(file_contents, line);  // concatène chaque ligne
+                }
+                fclose(file);
+                sendto(dS_udp, file_contents, strlen(file_contents), 0, (struct sockaddr*) &adress_socket, lgA);
+            }
         }
-        fclose(file);
-        sendto(dS_udp, file_contents, strlen(file_contents), 0, (struct sockaddr*) &adress_socket, lgA);
-    }
-}
 
         
         else {
