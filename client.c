@@ -18,7 +18,6 @@
 #define UPLOAD_CMD "@upload"
 #define DOWNLOAD_CMD "@download"
 #define FILE_BUFFER_SIZE 4096
-#define TCP_PORT 8888
 
 typedef struct {
     int sockfd;
@@ -26,7 +25,7 @@ typedef struct {
     socklen_t len;
 } structThread;
 
-// Fonction simplifiée pour envoyer un fichier
+// Fonction pour envoyer un fichier
 int send_file(const char* filename) {
     // Ouvrir le fichier en lecture
     FILE* file = fopen(filename, "rb");
@@ -97,7 +96,7 @@ int send_file(const char* filename) {
     return 0;
 }
 
-// Fonction simplifiée pour télécharger un fichier
+// Fonction pour télécharger un fichier
 int download_file(const char* filename) {
     // Créer une socket TCP
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -139,29 +138,41 @@ int download_file(const char* filename) {
         return -1;
     }
 
-    // Réception de la réponse initiale
-    char buffer[FILE_BUFFER_SIZE];
-    ssize_t bytes_received = recv(sock, buffer, FILE_BUFFER_SIZE, 0);
-    if (bytes_received <= 0) {
+    // D'abord recevoir le message de contrôle
+    char control_msg[BUFFER_SIZE];
+    ssize_t control_size = recv(sock, control_msg, BUFFER_SIZE - 1, 0);
+    if (control_size <= 0) {
         printf("Erreur: Pas de réponse du serveur\n");
         fclose(file);
         close(sock);
         return -1;
     }
+    control_msg[control_size] = '\0';
 
-    if (strncmp(buffer, "FILE_NOT_FOUND", 13) == 0) {
+    // Vérifier le message de contrôle
+    if (strcmp(control_msg, "FILE_NOT_FOUND") == 0) {
         printf("Erreur: Fichier non trouvé sur le serveur\n");
         fclose(file);
         close(sock);
-        remove(local_path);  // Supprimer le fichier vide
+        remove(local_path);
+        return -1;
+    }
+    else if (strcmp(control_msg, "FILE_SEND_START") != 0) {
+        printf("Erreur: Réponse inattendue du serveur\n");
+        fclose(file);
+        close(sock);
+        remove(local_path);
         return -1;
     }
 
-    // Écriture des données reçues dans le fichier
-    fwrite(buffer, 1, bytes_received, file);
+    // Recevoir le contenu du fichier
+    char buffer[FILE_BUFFER_SIZE];
+    ssize_t bytes_received;
+    long total_received = 0;
 
-    // Continuer à recevoir le reste du fichier
-    long total_received = bytes_received;
+    // Attendre un court instant pour que le serveur commence à envoyer le fichier
+    usleep(100000);  // 100ms
+
     while ((bytes_received = recv(sock, buffer, FILE_BUFFER_SIZE, 0)) > 0) {
         fwrite(buffer, 1, bytes_received, file);
         total_received += bytes_received;
