@@ -1,15 +1,14 @@
 #ifndef SIMPLE_DICT_H
 #define SIMPLE_DICT_H
 
-#include "globalVariables.h"
 #include <stddef.h>
 
 /**
- * Représente une paires (username → ip_address)
+ * Représente une paire (username → password)
  */
 typedef struct {
     char *key;    /* username */
-    char *value;  /* ip_address */
+    char *value;  /* password */
 } Entry;
 
 /**
@@ -27,7 +26,7 @@ SimpleDict *dict_create(void);
 /* Libère un dictionnaire et ses ressources */
 void dict_free(SimpleDict *d);
 
-/* Insère une nouvelle clé/valeur, redimensionne si seuil attei nt */
+/* Insère une nouvelle clé/valeur, redimensionne si seuil atteint */
 int dict_insert(SimpleDict *d, const char *key, const char *value);
 
 /* Récupère la valeur associée à la clé, NULL si absent */
