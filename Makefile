@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g
 
 # Common source files shared between server and client
-COMMON_SRC = dict.c globalVariables.c
+COMMON_SRC = dict.c globalVariables.c chatroom.c
 
 # Server-specific source files
 SERVER_SRC = server.c
@@ -33,9 +33,9 @@ $(CLIENT): $(CLIENT_OBJ)
 clean:
 	rm -f *.o
 
-# Clean executables and object files
+# Clean executables, object files, and data files
 fclean: clean
-	rm -f $(SERVER) $(CLIENT)
+	rm -f $(SERVER) $(CLIENT) users.txt rooms.txt
 
 # Rebuild everything
 re: fclean all
