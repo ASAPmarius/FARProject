@@ -13,13 +13,14 @@
 #include "dict.h"
 #include "chatroom.h"
 
-#define BUFFER_SIZE 1000
+#define BUFFER_SIZE 2000
 #define FILE_BUFFER_SIZE 4096
 #define LOGIN_CMD "@login"
 #define MESSAGE_CMD "@message"
 #define UPLOAD_CMD "@upload"
 #define DOWNLOAD_CMD "@download"
 #define HELP_CMD "@help"
+#define CREDITS_CMD "@credits"
 #define MAX_USERS 100
 
 // Flag pour contrôler la boucle principale
@@ -999,14 +1000,27 @@ int main(int argc, char *argv[]) {
                 sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*)&aE, lgA);
             } 
             else {
-                // Lire tout le fichier et envoyer d'un coup (si raisonnable)
-                char file_contents[4096] = "";  // assez grand pour le fichier d'aide
                 char line[512];
+                // Lire et envoyer ligne par ligne
                 while (fgets(line, sizeof(line), file)) {
-                    strcat(file_contents, line);  // concatène chaque ligne
+                    sendto(dS_udp, line, strlen(line), 0, (struct sockaddr*)&aE, lgA);
                 }
                 fclose(file);
-                sendto(dS_udp, file_contents, strlen(file_contents), 0, (struct sockaddr*)&aE, lgA);
+            }
+        }
+        else if (strncmp(buffer, CREDITS_CMD, strlen(CREDITS_CMD)) == 0) {
+            FILE *file = fopen("credits.txt", "r");
+            if (file == NULL) {
+                char error_msg[] = "Erreur : impossible d'ouvrir le fichier credits.txt\n";
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*)&aE, lgA);
+            } 
+            else {
+                char line[512];
+                // Lire et envoyer ligne par ligne
+                while (fgets(line, sizeof(line), file)) {
+                    sendto(dS_udp, line, strlen(line), 0, (struct sockaddr*)&aE, lgA);
+                }
+                fclose(file);
             }
         }
         else {

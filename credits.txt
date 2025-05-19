@@ -1,0 +1,45 @@
+Projet FAR (Fondements des Applications Réparties) - Serveur de Chat
+=====================================================
+
+Description du projet
+-------------------
+Implémentation d'un serveur de chat multi-clients avec les fonctionnalités suivantes :
+- Communication client-serveur via sockets UDP et TCP
+- Système d'authentification des utilisateurs
+- Gestion des salles de discussion (création, jointure, départ)
+- Messagerie privée entre utilisateurs
+- Transfert de fichiers via TCP
+- Persistance des données (utilisateurs et salles)
+
+Technologies utilisées
+--------------------
+- Langage : C
+- Protocoles : UDP/TCP
+- Systèmes UNIX/Linux
+
+Fonctionnalités principales
+-------------------------
+- Système de chat en temps réel
+- Gestion des utilisateurs
+- Gestion des salles de discussion
+- Transfert de fichiers
+- Messages privés
+- Commandes administrateur
+
+Structure du projet
+-----------------
+- server.c : Serveur principal
+- client.c : Client de chat
+- chatroom.c/h : Gestion des salles de discussion
+- dict.c/h : Implémentation du dictionnaire
+- users.c/h : Gestion des utilisateurs
+- globalVariables.c/h : Variables globales partagées
+
+Année universitaire : 2024-2025
+Institution : Polytech
+
+Note : Ce projet a été réalisé dans le cadre du cours de Fondements des Applications Réparties (FAR).
+
+Licence
+-------
+Tous droits réservés.
