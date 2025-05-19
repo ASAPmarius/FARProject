@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stdbool.h>
 #include "globalVariables.h"
 #include "dict.h"
 #include "chatroom.h"
@@ -292,6 +293,9 @@ int main(int argc, char *argv[]) {
         inet_ntop(AF_INET, &aE.sin_addr, client_ip, sizeof(client_ip));
         printf("Reçu de %s:%d : %s\n", client_ip, ntohs(aE.sin_port), buffer);
 
+        int idx = find_client_index(&aE);
+        bool is_logged = (idx >= 0 && clients[idx].active);
+
         // Traitement de la commande @login
         if (strncmp(buffer, LOGIN_CMD, strlen(LOGIN_CMD)) == 0) {
             // Extraction du nom d’utilisateur et du mot de passe
@@ -316,6 +320,7 @@ int main(int argc, char *argv[]) {
                     sendto(dS, hint, strlen(hint), 0, (struct sockaddr*)&aE, lgA);
                     continue;
                 }
+                
                 // Authentification réussie
                 if (uid < 0) {
                     // Chargé depuis users.txt mais pas encore dans clients[]
@@ -327,6 +332,7 @@ int main(int argc, char *argv[]) {
                 clients[uid].room_count = 0;
 
                 char resp[BUFFER_SIZE];
+                is_logged = true;
                 snprintf(resp, sizeof(resp), "Bienvenue %s! Vous êtes connecté.", user);
                 sendto(dS, resp, strlen(resp), 0, (struct sockaddr*)&aE, lgA);
 
@@ -340,9 +346,18 @@ int main(int argc, char *argv[]) {
                 clients[uid].room_count = 0;
 
                 char resp[BUFFER_SIZE];
+                is_logged = true;
                 snprintf(resp, sizeof(resp), "Bienvenue %s! Enregistré et connecté.", user);
                 sendto(dS, resp, strlen(resp), 0, (struct sockaddr*)&aE, lgA);
             }
+        }
+
+        if (!is_logged) {
+            const char *err =
+                "Erreur: vous devez d'abord vous connecter avec\n"
+                "@login <username> <password>";
+            sendto(dS, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
+            continue;
         }
 
         // -- PING --
