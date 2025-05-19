@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdbool.h>
 #include "globalVariables.h"
@@ -11,6 +14,14 @@
 #include "chatroom.h"
 
 #define BUFFER_SIZE 1000
+#define FILE_BUFFER_SIZE 4096
+#define LOGIN_CMD "@login"
+#define MESSAGE_CMD "@message"
+#define UPLOAD_CMD "@upload"
+#define DOWNLOAD_CMD "@download"
+#define HELP_CMD "@help"
+#define MAX_USERS 100
+#define TCP_PORT 8888
 #define MAX_USERS 100  // Maximum d'utilisateurs simultanés
 
 // Flag pour contrôler la boucle principale
@@ -25,8 +36,249 @@ typedef struct {
     int room_count;                  // Nombre de salles
 } ClientInfo;
 
+// Fonction pour créer et configurer la socket TCP
+int setup_tcp_socket() {
+
+    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (tcp_socket < 0) {
+        perror("Erreur création socket TCP");
+        return -1;
+    }
+
+    struct sockaddr_in tcp_addr;
+    memset(&tcp_addr, 0, sizeof(tcp_addr));
+
+    tcp_addr.sin_family = AF_INET;
+    tcp_addr.sin_addr.s_addr = INADDR_ANY;
+    tcp_addr.sin_port = htons(TCP_PORT);
+
+    // Permettre la réutilisation de l'adresse
+    int opt = 1;
+    setsockopt(tcp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));  
+    // Nommage de la socket
+    if (bind(tcp_socket, (struct sockaddr*)&tcp_addr, sizeof(tcp_addr)) < 0) {
+        perror("Erreur bind socket TCP");
+        close(tcp_socket);
+        return -1;
+    }
+    if (listen(tcp_socket, 5) < 0) {
+        perror("Erreur listen socket TCP");
+        close(tcp_socket);
+        return -1;
+    }
+    printf("Socket TCP écoutant sur le port %d\n", TCP_PORT);
+    return tcp_socket;
+}
+
+// Fonction pour gérer l'upload d'un fichier
+void handle_file_upload(int client_socket, const char* command) {
+    // Extraire le nom du fichier de la commande
+
+    const char* filename = command + strlen(UPLOAD_CMD) + 1;
+    //while (*filename == ' ') filename++; // Ignorer les espaces
+
+    if (strlen(filename) == 0) {
+        printf("Erreur: Nom de fichier manquant\n");
+        return;
+    }
+
+    // Vérifier que le dossier uploads existe
+    struct stat st = {0};
+    if (stat("uploads", &st) == -1) {
+        mkdir("uploads", 0777);
+        printf("Dossier uploads créé\n");
+    }
+
+    // Créer le chemin complet du fichier
+    char filepath[512];
+    snprintf(filepath, sizeof(filepath), "uploads/%s", filename);
+    printf("Réception du fichier: %s\n", filename);
+
+    // Ouvrir le fichier en écriture
+    FILE* file = fopen(filepath, "wb");
+    if (!file) {
+        printf("Erreur: Création du fichier %s\n", filepath);
+        return;
+    }
+
+    // Recevoir et écrire le contenu du fichier
+    char buffer[FILE_BUFFER_SIZE];
+    ssize_t bytes_received;
+    size_t total_received = 0;
+    
+    while ((bytes_received = recv(client_socket, buffer, FILE_BUFFER_SIZE, 0)) > 0) {
+        fwrite(buffer, 1, bytes_received, file);
+        total_received += bytes_received;
+        printf("Réception en cours: %zu octets reçus\r", total_received);
+        fflush(stdout);
+    }
+
+    printf("\nFichier %s reçu et sauvegardé (%zu octets)\n", filename, total_received);
+    fclose(file);
+
+    // Envoyer confirmation au client
+    char confirm_msg[] = "FILE_RECEIVED_OK";
+    send(client_socket, confirm_msg, strlen(confirm_msg), 0);
+}
+
+// Fonction pour gérer le téléchargement d'un fichier
+void handle_file_download(int client_socket, const char* filename) {
+    // Vérifier que le dossier uploads existe
+    struct stat st = {0};
+    if (stat("uploads", &st) == -1) {
+        printf("Erreur: Le dossier uploads n'existe pas\n");
+        char error_msg[] = "DIRECTORY_NOT_FOUND";
+        send(client_socket, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    char filepath[512];
+    snprintf(filepath, sizeof(filepath), "uploads/%s", filename);
+    printf("Tentative d'ouverture du fichier : %s\n", filepath);
+    
+    // Vérifier si le fichier existe et est accessible
+    if (access(filepath, F_OK) == -1) {
+        printf("Erreur: Le fichier %s n'existe pas\n", filepath);
+        char error_msg[] = "FILE_NOT_FOUND";
+        send(client_socket, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    // Ouvrir le fichier en lecture
+    FILE* file = fopen(filepath, "rb");
+    if (!file) {
+        printf("Erreur: Impossible d'ouvrir le fichier %s\n", filepath);
+        char error_msg[] = "FILE_OPEN_ERROR";
+        send(client_socket, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    // Obtenir la taille du fichier
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    printf("Envoi du fichier %s (taille: %ld octets)\n", filename, file_size);
+
+    // Envoyer un message de succès avant le contenu du fichier
+    char success_msg[] = "FILE_SEND_START";
+    send(client_socket, success_msg, strlen(success_msg), 0);
+
+    // Petit délai pour s'assurer que le client est prêt
+    usleep(100000);  // 100ms
+
+    // Envoyer le contenu du fichier
+    char buffer[FILE_BUFFER_SIZE];
+    size_t bytes_read;
+    long total_sent = 0;
+
+    while ((bytes_read = fread(buffer, 1, FILE_BUFFER_SIZE, file)) > 0) {
+        if (send(client_socket, buffer, bytes_read, 0) < 0) {
+            printf("Erreur lors de l'envoi du fichier\n");
+            break;
+        }
+        total_sent += bytes_read;
+        printf("Progression: %ld/%ld octets envoyés\r", total_sent, file_size);
+        fflush(stdout);
+    }
+
+    printf("\nFichier %s envoyé (%ld octets)\n", filename, total_sent);
+    fclose(file);
+}
+
+// Fonction pour gérer les transferts de fichiers
+void handle_file_transfers(int tcp_socket) {
+    while (1) {
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
+
+        printf("En attente de connexion TCP...\n");
+        int client_socket = accept(tcp_socket, (struct sockaddr*)&client_addr, &client_len);
+        if (client_socket < 0) {
+            perror("accept");
+            continue;
+        }
+
+        char command[BUFFER_SIZE];
+        ssize_t recv_size = recv(client_socket, command, BUFFER_SIZE - 1, 0);
+        if (recv_size > 0) {
+            command[recv_size] = '\0';
+            printf("Commande reçue : %s\n", command);
+            
+            if (strncmp(command, UPLOAD_CMD, strlen(UPLOAD_CMD)) == 0) {
+                handle_file_upload(client_socket, command);
+            } 
+            else if (strncmp(command, DOWNLOAD_CMD, strlen(DOWNLOAD_CMD)) == 0) {
+                char* filename = command + strlen(DOWNLOAD_CMD) + 1;
+                while (*filename == ' ') filename++; // Ignorer les espaces
+                if (strlen(filename) > 0) {
+                    printf("Demande de téléchargement pour le fichier : %s\n", filename);
+                    handle_file_download(client_socket, filename);
+                }
+            }
+        }
+
+        close(client_socket);
+    }
+}
+
+// Variables globales pour les sockets
+int dS_udp;  // Socket UDP pour la messagerie
+int dS_tcp;  // Socket TCP pour les fichiers
+
+int main(int argc, char *argv[]) {
+    printf("Début programme serveur\n");
+
+    // Création du dossier uploads s'il n'existe pas
+    mkdir("uploads", 0777);
+
+    // Création de la socket UDP
+    dS_udp = socket(PF_INET, SOCK_DGRAM, 0);
+    if (dS_udp == -1) {
+        perror("Erreur création socket UDP");
+        exit(EXIT_FAILURE);
+    }
+    printf("Socket UDP Créée\n");
+
+    // Création et configuration de la socket TCP
+    dS_tcp = setup_tcp_socket();
+    if (dS_tcp == -1) {
+        close(dS_udp);
+        exit(EXIT_FAILURE);
+    }
+    printf("Socket TCP Créée et configurée sur le port %d\n", TCP_PORT);
+
+    // Créer un processus fils pour gérer les transferts de fichiers
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Processus fils : gère les transferts de fichiers
+        close(dS_udp);  // Le fils n'a pas besoin de la socket UDP
+        handle_file_transfers(dS_tcp);
+        exit(0);
+    }
+    else if (pid < 0) {
+        perror("Erreur fork");
+        close(dS_udp);
+        close(dS_tcp);
+        exit(EXIT_FAILURE);
+    }
+    // Le processus parent continue pour gérer l'UDP
+
+    // Configuration de l'adresse locale pour UDP
+    struct sockaddr_in aL;
+    memset(&aL, 0, sizeof(aL));
+    aL.sin_family = AF_INET;
+    aL.sin_addr.s_addr = INADDR_ANY;
+    aL.sin_port = htons(serverPort);
+
+    // Nommage de la socket UDP uniquement
+    if (bind(dS_udp, (struct sockaddr*) &aL, sizeof(aL)) < 0) {
+        perror("Erreur nommage socket UDP");
+        close(dS_udp);
+        close(dS_tcp);
+        exit(EXIT_FAILURE);
+    }
 // Globals partagés
-int dS;                              // Socket du serveur
 SimpleDict *users_dict;              // Dictionnaire username → password
 ClientInfo *clients;                 // Tableau des clients
 int client_count = 0;                // Nombre de clients
@@ -512,7 +764,6 @@ int main(int argc, char *argv[]) {
                             sprintf(response, "Salle '%s' créée avec succès.", room_name);
                             sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
                         }
-                        
                         room_count++;
                     }
                 }
@@ -548,11 +799,10 @@ int main(int argc, char *argv[]) {
                     } else if (chatroom_is_full(rooms[room_index])) {
                         char response[BUFFER_SIZE];
                         sprintf(response, "Erreur: La salle '%s' est pleine.", room_name);
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
                     } else {
                         // Ajouter le client à la salle
-                        chatroom_add_member(rooms[room_index], client_index);
-                        
+                        chatroom_add_member(rooms[room_index], client_index);                  
                         // Ajouter la salle à la liste des salles du client
                         if (clients[client_index].room_count < MAX_ROOMS) {
                             clients[client_index].joined_rooms[clients[client_index].room_count++] = room_index;
@@ -600,8 +850,7 @@ int main(int argc, char *argv[]) {
                         sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
                     } else {
                         // Retirer le client de la salle
-                        chatroom_remove_member(rooms[room_index], client_index);
-                        
+                        chatroom_remove_member(rooms[room_index], client_index);          
                         // Retirer la salle de la liste des salles du client
                         for (int i = 0; i < clients[client_index].room_count; i++) {
                             if (clients[client_index].joined_rooms[i] == room_index) {
@@ -679,7 +928,6 @@ int main(int argc, char *argv[]) {
                         
                         char member_info[100];
                         sprintf(member_info, "- %s\n", clients[member_index].username);
-                        
                         // S'assurer qu'il y a assez d'espace dans la réponse
                         if (strlen(response) + strlen(member_info) < BUFFER_SIZE - 1) {
                             strcat(response, member_info);
@@ -751,7 +999,58 @@ int main(int argc, char *argv[]) {
                 char response[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@roomsg nom_salle message'.";
                 sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
             }
-        } else {
+        } 
+
+        // Traitement de la commande d'upload de fichier
+        else if (strncmp(buffer, UPLOAD_CMD, strlen(UPLOAD_CMD)) == 0) {
+        
+            char *filename = buffer + strlen(UPLOAD_CMD) + 1;
+            while (*filename == ' ') filename++; // Ignorer les espaces
+
+            if (strlen(filename) > 0) {
+                // Chercher l'utilisateur qui fait la demande
+                char sender_username[BUFFER_SIZE] = "inconnu";
+                for (int i = 0; i < client_count; i++) {
+                    if (clients[i].active && 
+                        clients[i].addr.sin_addr.s_addr == adress_socket.sin_addr.s_addr && 
+                        clients[i].addr.sin_port == adress_socket.sin_port) {
+                        strncpy(sender_username, clients[i].username, BUFFER_SIZE - 1);
+                        break;
+                    }
+                }
+
+                // Envoyer le port TCP au client via la socket UDP
+                char upload_response[BUFFER_SIZE];
+                sprintf(upload_response, "UPLOAD_PORT %d", TCP_PORT);
+                sendto(dS_udp, upload_response, strlen(upload_response), 0, (struct sockaddr*) &adress_socket, lgA);
+                
+                printf("Notification d'upload envoyée à %s pour le fichier %s\n", sender_username, filename);
+            } 
+            else {
+                char error_msg[BUFFER_SIZE] = "Format attendu: '@upload filename'";
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
+            }
+        } 
+        else if (strncmp(buffer, HELP_CMD, strlen(HELP_CMD)) == 0) {
+            FILE *file = fopen("commandes.txt", "r");
+            if (file == NULL) {
+                char *error_msg = "Erreur : impossible d'ouvrir le fichier commandes.txt\n";
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
+            } 
+            else {
+                // Lire tout le fichier et envoyer d’un coup (si raisonnable)
+                char file_contents[4096] = "";  // assez grand pour ton fichier d'aide
+                char line[512];
+                while (fgets(line, sizeof(line), file)) {
+                    strcat(file_contents, line);  // concatène chaque ligne
+                }
+                fclose(file);
+                sendto(dS_udp, file_contents, strlen(file_contents), 0, (struct sockaddr*) &adress_socket, lgA);
+            }
+        }
+
+        
+        else {
             // Message standard, format non reconnu
             printf("Message standard reçu\n");
             
@@ -764,7 +1063,8 @@ int main(int argc, char *argv[]) {
                 "@leaveroom nom_salle - Quitter une salle\n"
                 "@listrooms - Lister les salles disponibles\n"
                 "@listmembers nom_salle - Lister les membres d'une salle\n"
-                "@roomsg nom_salle message - Envoyer un message à une salle\n";
+                "@roomsg nom_salle message - Envoyer un message à une salle\n"
+                "@help - Liste de toutes les commandes\n";
             
             sendto(dS, help_msg, strlen(help_msg), 0, (struct sockaddr*) &aE, lgA);
         }
@@ -780,7 +1080,8 @@ int main(int argc, char *argv[]) {
     dict_free(users_dict);
     dict_free(room_dict);
     free(clients);
-    close(dS);
+    close(dS_udp);
+    close(dS_tcp);
     
     return 0;
 }

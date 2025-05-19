@@ -1,0 +1,29 @@
+
+''''' LISTE DES COMMANDES DISPONIBLES '''''
+
+## Commandes générales
+
+@help : Affiche la liste des commandes disponibles à l'utilisateur.  
+@credits : Affiche les crédits de l'application (contenu du fichier Credits.txt).  
+@ping : Vérifie la connexion avec le serveur (si le serveur est connecté, réponse : "pong").  
+@connect pseudo password : Permet à l'utilisateur de s'authentifier auprès du serveur avec son pseudo et mot de passe.  
+
+@message &pseudo_destinataire message_à_envoyer  
+    Remarque : le message peut contenir des espaces.  
+
+@shutdown : Ferme proprement le serveur (réservé aux administrateurs).  
+
+## Commandes pour l'envoi et la réception de fichiers
+
+@upload nom_fichier : Envoie un fichier du client vers le serveur.  
+@download nom_fichier : Télécharge un fichier depuis le serveur vers le client.  
+    Précondition : le fichier à télécharger doit d'abord avoir été uploadé.  
+
+## Commandes relatives aux salons de discussion
+
+@createroom nom_salon max_membres : Crée un nouveau salon de discussion.  
+@joinroom nom_salon : Rejoint un salon existant.  
+@leaveroom nom_salon : Quitte le salon spécifié.  
+@listrooms : Renvoie la liste des salons disponibles.  
+@roomsg nom_salon message : Envoie un message à l'ensemble des membres du salon.  
+@listmembers nom_salon : Renvoie la liste des membres inscrits dans un salon de discussion.  
