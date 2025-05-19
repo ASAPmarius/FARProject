@@ -21,8 +21,6 @@
 #define DOWNLOAD_CMD "@download"
 #define HELP_CMD "@help"
 #define MAX_USERS 100
-#define TCP_PORT 8888
-#define MAX_USERS 100  // Maximum d'utilisateurs simultanés
 
 // Flag pour contrôler la boucle principale
 static volatile sig_atomic_t running = 1;
@@ -36,9 +34,20 @@ typedef struct {
     int room_count;                  // Nombre de salles
 } ClientInfo;
 
+// Variables globales pour les sockets
+int dS_udp;  // Socket UDP pour la messagerie
+int dS_tcp;  // Socket TCP pour les fichiers
+
+// Variables globales pour le système de chat
+SimpleDict *users_dict;              // Dictionnaire username → password
+ClientInfo *clients;                 // Tableau des clients
+int client_count = 0;                // Nombre de clients
+ChatRoom *rooms[MAX_ROOMS];          // Tableau des salles
+int room_count = 0;                  // Nombre de salles
+SimpleDict *room_dict;               // Dictionnaire nom_salle → index
+
 // Fonction pour créer et configurer la socket TCP
 int setup_tcp_socket() {
-
     int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (tcp_socket < 0) {
         perror("Erreur création socket TCP");
@@ -73,9 +82,8 @@ int setup_tcp_socket() {
 // Fonction pour gérer l'upload d'un fichier
 void handle_file_upload(int client_socket, const char* command) {
     // Extraire le nom du fichier de la commande
-
     const char* filename = command + strlen(UPLOAD_CMD) + 1;
-    //while (*filename == ' ') filename++; // Ignorer les espaces
+    while (*filename == ' ') filename++; // Ignorer les espaces
 
     if (strlen(filename) == 0) {
         printf("Erreur: Nom de fichier manquant\n");
@@ -92,7 +100,7 @@ void handle_file_upload(int client_socket, const char* command) {
     // Créer le chemin complet du fichier
     char filepath[512];
     snprintf(filepath, sizeof(filepath), "uploads/%s", filename);
-    printf("Réception du fichier: %s\n", filename);
+    printf("Réception du fichier: %s\n", filepath);
 
     // Ouvrir le fichier en écriture
     FILE* file = fopen(filepath, "wb");
@@ -123,15 +131,17 @@ void handle_file_upload(int client_socket, const char* command) {
 
 // Fonction pour gérer le téléchargement d'un fichier
 void handle_file_download(int client_socket, const char* filename) {
-    // Vérifier que le dossier uploads existe
-    struct stat st = {0};
-    if (stat("uploads", &st) == -1) {
-        printf("Erreur: Le dossier uploads n'existe pas\n");
-        char error_msg[] = "DIRECTORY_NOT_FOUND";
+    // Enlever les espaces au début du nom de fichier
+    while (*filename == ' ') filename++;
+    
+    // Vérifier que le nom de fichier est valide
+    if (strlen(filename) == 0) {
+        printf("Erreur: Nom de fichier vide\n");
+        char error_msg[] = "FILE_NOT_FOUND";
         send(client_socket, error_msg, strlen(error_msg), 0);
         return;
     }
-
+    
     char filepath[512];
     snprintf(filepath, sizeof(filepath), "uploads/%s", filename);
     printf("Tentative d'ouverture du fichier : %s\n", filepath);
@@ -188,7 +198,7 @@ void handle_file_download(int client_socket, const char* filename) {
 
 // Fonction pour gérer les transferts de fichiers
 void handle_file_transfers(int tcp_socket) {
-    while (1) {
+    while (running) {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
 
@@ -210,11 +220,7 @@ void handle_file_transfers(int tcp_socket) {
             } 
             else if (strncmp(command, DOWNLOAD_CMD, strlen(DOWNLOAD_CMD)) == 0) {
                 char* filename = command + strlen(DOWNLOAD_CMD) + 1;
-                while (*filename == ' ') filename++; // Ignorer les espaces
-                if (strlen(filename) > 0) {
-                    printf("Demande de téléchargement pour le fichier : %s\n", filename);
-                    handle_file_download(client_socket, filename);
-                }
+                handle_file_download(client_socket, filename);
             }
         }
 
@@ -222,83 +228,20 @@ void handle_file_transfers(int tcp_socket) {
     }
 }
 
-// Variables globales pour les sockets
-int dS_udp;  // Socket UDP pour la messagerie
-int dS_tcp;  // Socket TCP pour les fichiers
-
-int main(int argc, char *argv[]) {
-    printf("Début programme serveur\n");
-
-    // Création du dossier uploads s'il n'existe pas
-    mkdir("uploads", 0777);
-
-    // Création de la socket UDP
-    dS_udp = socket(PF_INET, SOCK_DGRAM, 0);
-    if (dS_udp == -1) {
-        perror("Erreur création socket UDP");
-        exit(EXIT_FAILURE);
-    }
-    printf("Socket UDP Créée\n");
-
-    // Création et configuration de la socket TCP
-    dS_tcp = setup_tcp_socket();
-    if (dS_tcp == -1) {
-        close(dS_udp);
-        exit(EXIT_FAILURE);
-    }
-    printf("Socket TCP Créée et configurée sur le port %d\n", TCP_PORT);
-
-    // Créer un processus fils pour gérer les transferts de fichiers
-    pid_t pid = fork();
-    if (pid == 0) {
-        // Processus fils : gère les transferts de fichiers
-        close(dS_udp);  // Le fils n'a pas besoin de la socket UDP
-        handle_file_transfers(dS_tcp);
-        exit(0);
-    }
-    else if (pid < 0) {
-        perror("Erreur fork");
-        close(dS_udp);
-        close(dS_tcp);
-        exit(EXIT_FAILURE);
-    }
-    // Le processus parent continue pour gérer l'UDP
-
-    // Configuration de l'adresse locale pour UDP
-    struct sockaddr_in aL;
-    memset(&aL, 0, sizeof(aL));
-    aL.sin_family = AF_INET;
-    aL.sin_addr.s_addr = INADDR_ANY;
-    aL.sin_port = htons(serverPort);
-
-    // Nommage de la socket UDP uniquement
-    if (bind(dS_udp, (struct sockaddr*) &aL, sizeof(aL)) < 0) {
-        perror("Erreur nommage socket UDP");
-        close(dS_udp);
-        close(dS_tcp);
-        exit(EXIT_FAILURE);
-    }
-// Globals partagés
-SimpleDict *users_dict;              // Dictionnaire username → password
-ClientInfo *clients;                 // Tableau des clients
-int client_count = 0;                // Nombre de clients
-ChatRoom *rooms[MAX_ROOMS];          // Tableau des salles
-int room_count = 0;                  // Nombre de salles
-SimpleDict *room_dict;               // Dictionnaire nom_salle → index
-
 // Diffuse un message à tous les membres d'une salle (sauf expéditeur)
 void broadcast_to_room(int room_index, const char *message, const char *sender_username, struct sockaddr_in *sender_addr) {
     if (room_index < 0 || room_index >= room_count || !rooms[room_index]) return;
     ChatRoom *room = rooms[room_index];
     char forward_msg[BUFFER_SIZE];
     sprintf(forward_msg, "[%s] %s: %s", room->name, sender_username, message);
+
     for (int i = 0; i < room->member_count; i++) {
         int member = room->member_indices[i];
         if (clients[member].active &&
             (sender_addr == NULL ||
              clients[member].addr.sin_addr.s_addr != sender_addr->sin_addr.s_addr ||
              clients[member].addr.sin_port        != sender_addr->sin_port)) {
-            if (sendto(dS, forward_msg, strlen(forward_msg), 0,
+            if (sendto(dS_udp, forward_msg, strlen(forward_msg), 0,
                        (struct sockaddr*)&clients[member].addr,
                        sizeof(clients[member].addr)) < 0) {
                 perror("Erreur envoi message à un membre");
@@ -306,8 +249,6 @@ void broadcast_to_room(int room_index, const char *message, const char *sender_u
         }
     }
 }
-
-
 
 // Retourne l'index d'un client à partir de son adresse, ou -1 sinon
 int find_client_index(struct sockaddr_in *addr) {
@@ -325,6 +266,19 @@ int find_client_index(struct sockaddr_in *addr) {
 int find_room_by_name(const char *room_name) {
     const char *idx = dict_get(room_dict, room_name);
     return idx ? atoi(idx) : -1;
+}
+
+/**
+ * Recherche l'index du client via son username (chargé en mémoire).
+ * Retourne -1 si introuvable.
+ */
+static int find_user_index_by_name(const char *username) {
+    for (int i = 0; i < client_count; i++) {
+        if (strcmp(clients[i].username, username) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 /**
@@ -357,20 +311,6 @@ void save_rooms_to_file(const char* filename) {
     printf("Rooms saved to %s\n", filename);
 }
 
-
-/**
- * Recherche l'index du client via son username (chargé en mémoire).
- * Retourne -1 si introuvable.
- */
-static int find_user_index_by_name(const char *username) {
-    for (int i = 0; i < client_count; i++) {
-        if (strcmp(clients[i].username, username) == 0) {
-            return i;
-        }
-    }
-    return -1;
-}
-
 // Sauvegarde les utilisateurs (index:username:password) dans un fichier
 void save_users_to_file(const char* filename) {
     FILE* f = fopen(filename, "w");
@@ -384,7 +324,6 @@ void save_users_to_file(const char* filename) {
     fclose(f);
     printf("Users saved to %s\n", filename);
 }
-
 
 // Charge les utilisateurs depuis un fichier (index:username:password)
 void load_users_from_file(const char* filename) {
@@ -413,7 +352,6 @@ void load_users_from_file(const char* filename) {
     fclose(f);
     printf("Loaded %d users from %s\n", client_count, filename);
 }
-
 
 /**
  * Charge les salles et leurs membres depuis le fichier.
@@ -474,11 +412,10 @@ void load_rooms_from_file(const char* filename) {
         // Parcourir les membres listés
         char *tok = strtok(members_list, ",");
         while (tok) {
-            // find_user_index_by_name doit exister (voir plus haut)
             int uid = find_user_index_by_name(tok);
             if (uid >= 0) {
                 chatroom_add_member(r, uid);
-                clients[uid].joined_rooms[ clients[uid].room_count++ ] = id;
+                clients[uid].joined_rooms[clients[uid].room_count++] = id;
             }
             tok = strtok(NULL, ",");
         }
@@ -487,6 +424,7 @@ void load_rooms_from_file(const char* filename) {
     fclose(f);
     printf("Loaded %d rooms from %s\n", room_count, filename);
 }
+
 // Gestionnaire de signal : sauvegarde et cleanup, puis exit
 void handle_signal(int sig) {
     printf("\nFermeture du serveur (signal %d)...\n", sig);
@@ -496,48 +434,93 @@ void handle_signal(int sig) {
     dict_free(users_dict);
     dict_free(room_dict);
     free(clients);
-    close(dS);
+    close(dS_udp);
+    close(dS_tcp);
     exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[]) {
-    printf("Début programme serveur UDP\n");
+    printf("Début programme serveur\n");
+
+    // Configuration du gestionnaire de signaux
     signal(SIGINT,  handle_signal);
     signal(SIGTERM, handle_signal);
 
-    // création de la socket
-    dS = socket(PF_INET, SOCK_DGRAM, 0);
-    if (dS < 0) { perror("socket"); exit(EXIT_FAILURE); }
-    printf("Socket UDP créée\n");
+    // Création du dossier uploads s'il n'existe pas
+    mkdir("uploads", 0777);
+    mkdir("downloads", 0777);
 
-    struct sockaddr_in aL = { .sin_family = AF_INET,
-                              .sin_addr.s_addr = INADDR_ANY,
-                              .sin_port = htons(serverPort) };
-    if (bind(dS, (struct sockaddr*)&aL, sizeof(aL)) < 0) {
-        perror("bind"); exit(EXIT_FAILURE);
+    // Création de la socket UDP
+    dS_udp = socket(PF_INET, SOCK_DGRAM, 0);
+    if (dS_udp == -1) {
+        perror("Erreur création socket UDP");
+        exit(EXIT_FAILURE);
     }
-    printf("Socket bindée sur port %d\n", serverPort);
+    printf("Socket UDP Créée\n");
 
-    // init structures
+    // Création et configuration de la socket TCP
+    dS_tcp = setup_tcp_socket();
+    if (dS_tcp == -1) {
+        close(dS_udp);
+        exit(EXIT_FAILURE);
+    }
+    printf("Socket TCP Créée et configurée sur le port %d\n", TCP_PORT);
+
+    // Configuration de l'adresse locale pour UDP
+    struct sockaddr_in aL;
+    memset(&aL, 0, sizeof(aL));
+    aL.sin_family = AF_INET;
+    aL.sin_addr.s_addr = INADDR_ANY;
+    aL.sin_port = htons(serverPort);
+
+    // Nommage de la socket UDP uniquement
+    if (bind(dS_udp, (struct sockaddr*) &aL, sizeof(aL)) < 0) {
+        perror("Erreur nommage socket UDP");
+        close(dS_udp);
+        close(dS_tcp);
+        exit(EXIT_FAILURE);
+    }
+    printf("Socket UDP bindée sur port %d\n", serverPort);
+
+    // Initialisation des structures
     users_dict = dict_create();
     dict_insert(users_dict, "admin", "admin");
-    room_dict  = dict_create();
-    clients    = calloc(MAX_USERS, sizeof(ClientInfo));
-    for (int i = 0; i < MAX_USERS; i++) clients[i].active = 0, clients[i].room_count = 0;
+    room_dict = dict_create();
+    clients = calloc(MAX_USERS, sizeof(ClientInfo));
+    for (int i = 0; i < MAX_USERS; i++) {
+        clients[i].active = 0;
+        clients[i].room_count = 0;
+    }
 
+    // Chargement des utilisateurs et des salles
     load_users_from_file("users.txt");
     load_rooms_from_file("rooms.txt");
 
+    // Créer un processus fils pour gérer les transferts de fichiers
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Processus fils : gère les transferts de fichiers
+        close(dS_udp);  // Le fils n'a pas besoin de la socket UDP
+        handle_file_transfers(dS_tcp);
+        exit(0);
+    }
+    else if (pid < 0) {
+        perror("Erreur fork");
+        close(dS_udp);
+        close(dS_tcp);
+        exit(EXIT_FAILURE);
+    }
+    
     printf("Serveur prêt, en attente de messages...\n");
 
-    // boucle principale
+    // Boucle principale
     char buffer[BUFFER_SIZE];
     struct sockaddr_in aE;
     socklen_t lgA = sizeof(aE);
 
     while (running) {
         memset(buffer, 0, BUFFER_SIZE);
-        int n = recvfrom(dS, buffer, BUFFER_SIZE-1, 0, (struct sockaddr*)&aE, &lgA);
+        int n = recvfrom(dS_udp, buffer, BUFFER_SIZE-1, 0, (struct sockaddr*)&aE, &lgA);
         if (n < 0) { perror("recvfrom"); continue; }
         buffer[n] = '\0';
 
@@ -550,12 +533,12 @@ int main(int argc, char *argv[]) {
 
         // Traitement de la commande @login
         if (strncmp(buffer, LOGIN_CMD, strlen(LOGIN_CMD)) == 0) {
-            // Extraction du nom d’utilisateur et du mot de passe
+            // Extraction du nom d'utilisateur et du mot de passe
             char *user = strtok(buffer + strlen(LOGIN_CMD) + 1, " ");
             char *pass = strtok(NULL, " ");
             if (!user || !pass) {
                 const char *err = "Erreur: Veuillez fournir nom d'utilisateur et mot de passe.";
-                sendto(dS, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
+                sendto(dS_udp, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
                 continue;
             }
 
@@ -567,9 +550,9 @@ int main(int argc, char *argv[]) {
                 // Utilisateur connu → vérifier le mot de passe
                 if (strcmp(stored, pass) != 0) {
                     const char *err  = "Erreur: Mot de passe incorrect.";
-                    sendto(dS, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
+                    sendto(dS_udp, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
                     const char *hint = "Veuillez retaper : @login <username> <password>";
-                    sendto(dS, hint, strlen(hint), 0, (struct sockaddr*)&aE, lgA);
+                    sendto(dS_udp, hint, strlen(hint), 0, (struct sockaddr*)&aE, lgA);
                     continue;
                 }
                 
@@ -586,7 +569,7 @@ int main(int argc, char *argv[]) {
                 char resp[BUFFER_SIZE];
                 is_logged = true;
                 snprintf(resp, sizeof(resp), "Bienvenue %s! Vous êtes connecté.", user);
-                sendto(dS, resp, strlen(resp), 0, (struct sockaddr*)&aE, lgA);
+                sendto(dS_udp, resp, strlen(resp), 0, (struct sockaddr*)&aE, lgA);
 
             } else {
                 // Nouvel utilisateur
@@ -600,48 +583,39 @@ int main(int argc, char *argv[]) {
                 char resp[BUFFER_SIZE];
                 is_logged = true;
                 snprintf(resp, sizeof(resp), "Bienvenue %s! Enregistré et connecté.", user);
-                sendto(dS, resp, strlen(resp), 0, (struct sockaddr*)&aE, lgA);
+                sendto(dS_udp, resp, strlen(resp), 0, (struct sockaddr*)&aE, lgA);
             }
+            continue;
         }
 
         if (!is_logged) {
             const char *err =
                 "Erreur: vous devez d'abord vous connecter avec\n"
                 "@login <username> <password>";
-            sendto(dS, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
+            sendto(dS_udp, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
             continue;
         }
 
         // -- PING --
-        else if (strncmp(buffer, "@ping", 5) == 0) {
+        if (strncmp(buffer, "@ping", 5) == 0) {
             const char *pong = "pong\n";
-            sendto(dS, pong, strlen(pong), 0, (struct sockaddr*)&aE, lgA);
-            continue;
+            sendto(dS_udp, pong, strlen(pong), 0, (struct sockaddr*)&aE, lgA);
         }
+        // -- SHUTDOWN --
         else if (strncmp(buffer, "@shutdown", 9) == 0) {
-            // On identifie qui envoie la commande
-            int sender_idx = find_user_index_by_name(
-                find_client_index(&aE) >= 0
-                    ? clients[ find_client_index(&aE) ].username
-                    : ""
-            );
+            // Vérifier si l'utilisateur est admin
             int idx = find_client_index(&aE);
             if (idx >= 0 && strcmp(clients[idx].username, "admin") == 0) {
                 const char *msg = "Serveur éteint!\n";
-                sendto(dS, msg, strlen(msg), 0,
-                    (struct sockaddr*)&aE, lgA);
+                sendto(dS_udp, msg, strlen(msg), 0, (struct sockaddr*)&aE, lgA);
                 // On déclenche proprement la fermeture
                 raise(SIGINT);
             } else {
                 const char *err = "Erreur: accès refusé. Cette commande est réservée à l'utilisateur 'admin'.";
-                sendto(dS, err, strlen(err), 0,
-                    (struct sockaddr*)&aE, lgA);
+                sendto(dS_udp, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
             }
-            continue;
         }
-
-
-        // -- MESSAGE PRIVÉ (deuxième version) --
+        // -- MESSAGE PRIVÉ --
         else if (strncmp(buffer, MESSAGE_CMD, strlen(MESSAGE_CMD)) == 0) {
             char dest[BUFFER_SIZE] = {0}, content[BUFFER_SIZE] = {0};
             char *start = buffer + strlen(MESSAGE_CMD) + 1;
@@ -659,28 +633,23 @@ int main(int argc, char *argv[]) {
                     int didx = find_user_index_by_name(dest);
                     if (didx >= 0 && clients[didx].active) {
                         // Identifier l'expéditeur
+                        int sender_idx = find_client_index(&aE);
                         char sender[50] = "inconnu";
-                        for (int i = 0; i < client_count; i++) {
-                            if (clients[i].active &&
-                                clients[i].addr.sin_addr.s_addr == aE.sin_addr.s_addr &&
-                                clients[i].addr.sin_port        == aE.sin_port) {
-                                strncpy(sender, clients[i].username, sizeof(sender)-1);
-                                break;
-                            }
+                        if (sender_idx >= 0) {
+                            strncpy(sender, clients[sender_idx].username, sizeof(sender)-1);
                         }
 
                         // Construire et envoyer
                         char forward[BUFFER_SIZE];
                         snprintf(forward, sizeof(forward), "Message de %s: %s", sender, content);
-                        if (sendto(dS, forward, strlen(forward), 0,
+                        if (sendto(dS_udp, forward, strlen(forward), 0,
                                 (struct sockaddr*)&clients[didx].addr,
                                 sizeof(clients[didx].addr)) < 0) {
                             perror("sendto");
                         } else {
                             char conf[BUFFER_SIZE];
                             snprintf(conf, sizeof(conf), "Message envoyé à %s.", dest);
-                            sendto(dS, conf, strlen(conf), 0,
-                                (struct sockaddr*)&aE, lgA);
+                            sendto(dS_udp, conf, strlen(conf), 0, (struct sockaddr*)&aE, lgA);
                         }
                     } else {
                         // Destinataire introuvable ou déconnecté
@@ -692,20 +661,43 @@ int main(int argc, char *argv[]) {
                             snprintf(err, sizeof(err),
                                     "Erreur: Utilisateur '%s' non connecté.", dest);
                         }
-                        sendto(dS, err, strlen(err), 0,
-                            (struct sockaddr*)&aE, lgA);
+                        sendto(dS_udp, err, strlen(err), 0, (struct sockaddr*)&aE, lgA);
                     }
                 } else {
                     const char *e = "Format invalide. Utilisez '@message &destinataire message'.";
-                    sendto(dS, e, strlen(e), 0, (struct sockaddr*)&aE, lgA);
+                    sendto(dS_udp, e, strlen(e), 0, (struct sockaddr*)&aE, lgA);
                 }
             } else {
                 const char *e = "Format invalide. Utilisez '@message &destinataire message'.";
-                sendto(dS, e, strlen(e), 0, (struct sockaddr*)&aE, lgA);
+                sendto(dS_udp, e, strlen(e), 0, (struct sockaddr*)&aE, lgA);
             }
-
         }
-         // Commande pour créer une salle
+        // Traitement de la commande d'upload de fichier
+        else if (strncmp(buffer, UPLOAD_CMD, strlen(UPLOAD_CMD)) == 0) {
+            char *filename = buffer + strlen(UPLOAD_CMD) + 1;
+            while (*filename == ' ') filename++; // Ignorer les espaces
+
+            if (strlen(filename) > 0) {
+                // Chercher l'utilisateur qui fait la demande
+                char sender_username[BUFFER_SIZE] = "inconnu";
+                int sender_idx = find_client_index(&aE);
+                if (sender_idx >= 0) {
+                    strncpy(sender_username, clients[sender_idx].username, BUFFER_SIZE - 1);
+                }
+
+                // Envoyer le port TCP au client via la socket UDP
+                char upload_response[BUFFER_SIZE];
+                sprintf(upload_response, "UPLOAD_PORT %d", TCP_PORT);
+                sendto(dS_udp, upload_response, strlen(upload_response), 0, (struct sockaddr*)&aE, lgA);
+                
+                printf("Notification d'upload envoyée à %s pour le fichier %s\n", sender_username, filename);
+            } 
+            else {
+                char error_msg[BUFFER_SIZE] = "Format attendu: '@upload filename'";
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*)&aE, lgA);
+            }
+        }
+        // Commande pour créer une salle
         else if (strncmp(buffer, CREATEROOM_CMD, strlen(CREATEROOM_CMD)) == 0) {
             // Format attendu: "@createroom nom_salle max_membres"
             char *params = buffer + strlen(CREATEROOM_CMD) + 1; // +1 pour l'espace
@@ -718,7 +710,7 @@ int main(int argc, char *argv[]) {
                 // Vérifier que max_members est au moins 1
                 if (max_members <= 0) {
                     char response[BUFFER_SIZE] = "Erreur: Le nombre maximum de membres doit être au moins 1.";
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                     continue;
                 }
                 
@@ -726,17 +718,17 @@ int main(int argc, char *argv[]) {
                 if (dict_get(room_dict, room_name) != NULL) {
                     char response[BUFFER_SIZE];
                     sprintf(response, "Erreur: Une salle nommée '%s' existe déjà.", room_name);
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                 } else if (room_count >= MAX_ROOMS) {
                     // Nombre maximum de salles atteint
                     char response[BUFFER_SIZE] = "Erreur: Nombre maximum de salles atteint.";
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                 } else {
                     // Créer la nouvelle salle
                     ChatRoom *new_room = chatroom_create(room_name, max_members);
                     if (!new_room) {
                         char response[BUFFER_SIZE] = "Erreur: Impossible de créer la salle.";
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                     } else {
                         // Ajouter la salle au tableau et au dictionnaire
                         rooms[room_count] = new_room;
@@ -758,11 +750,11 @@ int main(int argc, char *argv[]) {
                             
                             char response[BUFFER_SIZE];
                             sprintf(response, "Salle '%s' créée avec succès et vous y avez été ajouté.", room_name);
-                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                         } else {
                             char response[BUFFER_SIZE];
                             sprintf(response, "Salle '%s' créée avec succès.", room_name);
-                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                         }
                         room_count++;
                     }
@@ -770,7 +762,7 @@ int main(int argc, char *argv[]) {
             } else {
                 // Format invalide
                 char response[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@createroom nom_salle max_membres'.";
-                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
             }
         }
         // Commande pour rejoindre une salle
@@ -783,23 +775,23 @@ int main(int argc, char *argv[]) {
             if (room_index < 0) {
                 char response[BUFFER_SIZE];
                 sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
-                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
             } else {
                 // Trouver le client qui souhaite rejoindre
                 int client_index = find_client_index(&aE);
                 if (client_index < 0) {
                     char response[BUFFER_SIZE] = "Erreur: Vous n'êtes pas connecté.";
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                 } else {
                     // Vérifier si le client est déjà membre
                     if (chatroom_is_member(rooms[room_index], client_index)) {
                         char response[BUFFER_SIZE];
                         sprintf(response, "Vous êtes déjà membre de la salle '%s'.", room_name);
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                     } else if (chatroom_is_full(rooms[room_index])) {
                         char response[BUFFER_SIZE];
                         sprintf(response, "Erreur: La salle '%s' est pleine.", room_name);
-                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                     } else {
                         // Ajouter le client à la salle
                         chatroom_add_member(rooms[room_index], client_index);                  
@@ -809,7 +801,7 @@ int main(int argc, char *argv[]) {
                             
                             char response[BUFFER_SIZE];
                             sprintf(response, "Vous avez rejoint la salle '%s'.", room_name);
-                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                             
                             // Notifier les autres membres
                             char notification[BUFFER_SIZE];
@@ -819,7 +811,7 @@ int main(int argc, char *argv[]) {
                             chatroom_remove_member(rooms[room_index], client_index);
                             
                             char response[BUFFER_SIZE] = "Erreur: Vous avez rejoint trop de salles.";
-                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                         }
                     }
                 }
@@ -835,19 +827,19 @@ int main(int argc, char *argv[]) {
             if (room_index < 0) {
                 char response[BUFFER_SIZE];
                 sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
-                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
             } else {
                 // Trouver le client qui souhaite quitter
                 int client_index = find_client_index(&aE);
                 if (client_index < 0) {
                     char response[BUFFER_SIZE] = "Erreur: Vous n'êtes pas connecté.";
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                 } else {
                     // Vérifier si le client est membre
                     if (!chatroom_is_member(rooms[room_index], client_index)) {
                         char response[BUFFER_SIZE];
                         sprintf(response, "Erreur: Vous n'êtes pas membre de la salle '%s'.", room_name);
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                     } else {
                         // Retirer le client de la salle
                         chatroom_remove_member(rooms[room_index], client_index);          
@@ -865,7 +857,7 @@ int main(int argc, char *argv[]) {
                         
                         char response[BUFFER_SIZE];
                         sprintf(response, "Vous avez quitté la salle '%s'.", room_name);
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                         
                         // Notifier les autres membres
                         char notification[BUFFER_SIZE];
@@ -879,7 +871,7 @@ int main(int argc, char *argv[]) {
         else if (strncmp(buffer, LISTROOMS_CMD, strlen(LISTROOMS_CMD)) == 0) {
             if (room_count == 0) {
                 char response[BUFFER_SIZE] = "Aucune salle n'existe actuellement.";
-                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
             } else {
                 char response[BUFFER_SIZE] = "Liste des salles disponibles:\n";
                 
@@ -898,7 +890,7 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 
-                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
             }
         }
         // Commande pour lister les membres d'une salle
@@ -911,14 +903,14 @@ int main(int argc, char *argv[]) {
             if (room_index < 0) {
                 char response[BUFFER_SIZE];
                 sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
-                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
             } else {
                 ChatRoom *room = rooms[room_index];
                 
                 if (chatroom_get_member_count(room) == 0) {
                     char response[BUFFER_SIZE];
                     sprintf(response, "La salle '%s' ne contient aucun membre.", room_name);
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                 } else {
                     char response[BUFFER_SIZE];
                     sprintf(response, "Membres de la salle '%s':\n", room_name);
@@ -934,7 +926,7 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                 }
             }
         }
@@ -965,19 +957,19 @@ int main(int argc, char *argv[]) {
                     if (room_index < 0) {
                         char response[BUFFER_SIZE];
                         sprintf(response, "Erreur: Salle '%s' introuvable.", room_name);
-                        sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                        sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                     } else {
                         // Trouver le client qui envoie le message
                         int client_index = find_client_index(&aE);
                         if (client_index < 0) {
                             char response[BUFFER_SIZE] = "Erreur: Vous n'êtes pas connecté.";
-                            sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                            sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                         } else {
                             // Vérifier si le client est membre de la salle
                             if (!chatroom_is_member(rooms[room_index], client_index)) {
                                 char response[BUFFER_SIZE];
                                 sprintf(response, "Erreur: Vous n'êtes pas membre de la salle '%s'.", room_name);
-                                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                             } else {
                                 // Diffuser le message à tous les membres de la salle
                                 broadcast_to_room(room_index, message_content, clients[client_index].username, &aE);
@@ -985,71 +977,38 @@ int main(int argc, char *argv[]) {
                                 // Confirmer l'envoi
                                 char confirm_msg[BUFFER_SIZE];
                                 sprintf(confirm_msg, "Message envoyé à la salle '%s'.", room_name);
-                                sendto(dS, confirm_msg, strlen(confirm_msg), 0, (struct sockaddr*) &aE, lgA);
+                                sendto(dS_udp, confirm_msg, strlen(confirm_msg), 0, (struct sockaddr*)&aE, lgA);
                             }
                         }
                     }
                 } else {
                     // Nom de salle invalide
                     char response[BUFFER_SIZE] = "Erreur: Nom de salle invalide.";
-                    sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
+                    sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
                 }
             } else {
                 // Format invalide
                 char response[BUFFER_SIZE] = "Erreur: Format invalide. Utilisez '@roomsg nom_salle message'.";
-                sendto(dS, response, strlen(response), 0, (struct sockaddr*) &aE, lgA);
-            }
-        } 
-
-        // Traitement de la commande d'upload de fichier
-        else if (strncmp(buffer, UPLOAD_CMD, strlen(UPLOAD_CMD)) == 0) {
-        
-            char *filename = buffer + strlen(UPLOAD_CMD) + 1;
-            while (*filename == ' ') filename++; // Ignorer les espaces
-
-            if (strlen(filename) > 0) {
-                // Chercher l'utilisateur qui fait la demande
-                char sender_username[BUFFER_SIZE] = "inconnu";
-                for (int i = 0; i < client_count; i++) {
-                    if (clients[i].active && 
-                        clients[i].addr.sin_addr.s_addr == adress_socket.sin_addr.s_addr && 
-                        clients[i].addr.sin_port == adress_socket.sin_port) {
-                        strncpy(sender_username, clients[i].username, BUFFER_SIZE - 1);
-                        break;
-                    }
-                }
-
-                // Envoyer le port TCP au client via la socket UDP
-                char upload_response[BUFFER_SIZE];
-                sprintf(upload_response, "UPLOAD_PORT %d", TCP_PORT);
-                sendto(dS_udp, upload_response, strlen(upload_response), 0, (struct sockaddr*) &adress_socket, lgA);
-                
-                printf("Notification d'upload envoyée à %s pour le fichier %s\n", sender_username, filename);
-            } 
-            else {
-                char error_msg[BUFFER_SIZE] = "Format attendu: '@upload filename'";
-                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
+                sendto(dS_udp, response, strlen(response), 0, (struct sockaddr*)&aE, lgA);
             }
         } 
         else if (strncmp(buffer, HELP_CMD, strlen(HELP_CMD)) == 0) {
             FILE *file = fopen("commandes.txt", "r");
             if (file == NULL) {
-                char *error_msg = "Erreur : impossible d'ouvrir le fichier commandes.txt\n";
-                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*) &adress_socket, lgA);
+                char error_msg[] = "Erreur : impossible d'ouvrir le fichier commandes.txt\n";
+                sendto(dS_udp, error_msg, strlen(error_msg), 0, (struct sockaddr*)&aE, lgA);
             } 
             else {
-                // Lire tout le fichier et envoyer d’un coup (si raisonnable)
-                char file_contents[4096] = "";  // assez grand pour ton fichier d'aide
+                // Lire tout le fichier et envoyer d'un coup (si raisonnable)
+                char file_contents[4096] = "";  // assez grand pour le fichier d'aide
                 char line[512];
                 while (fgets(line, sizeof(line), file)) {
                     strcat(file_contents, line);  // concatène chaque ligne
                 }
                 fclose(file);
-                sendto(dS_udp, file_contents, strlen(file_contents), 0, (struct sockaddr*) &adress_socket, lgA);
+                sendto(dS_udp, file_contents, strlen(file_contents), 0, (struct sockaddr*)&aE, lgA);
             }
         }
-
-        
         else {
             // Message standard, format non reconnu
             printf("Message standard reçu\n");
@@ -1064,9 +1023,11 @@ int main(int argc, char *argv[]) {
                 "@listrooms - Lister les salles disponibles\n"
                 "@listmembers nom_salle - Lister les membres d'une salle\n"
                 "@roomsg nom_salle message - Envoyer un message à une salle\n"
+                "@upload nom_fichier - Envoyer un fichier au serveur\n"
+                "@download nom_fichier - Télécharger un fichier du serveur\n"
                 "@help - Liste de toutes les commandes\n";
             
-            sendto(dS, help_msg, strlen(help_msg), 0, (struct sockaddr*) &aE, lgA);
+            sendto(dS_udp, help_msg, strlen(help_msg), 0, (struct sockaddr*)&aE, lgA);
         }
     }
     

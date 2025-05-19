@@ -20,14 +20,16 @@
 #define UPLOAD_CMD "@upload"
 #define DOWNLOAD_CMD "@download"
 #define FILE_BUFFER_SIZE 4096
-pthread_t tid_send, tid_recv;
-int running = 1; // Flag pour contrôler l'exécution des threads
 
+// Define the thread argument structure
 typedef struct {
     int sockfd;
     struct sockaddr_in servaddr;
     socklen_t len;
-} structThread;
+} thread_arg_t;
+
+pthread_t tid_send, tid_recv;
+int running = 1; // Flag pour contrôler l'exécution des threads
 
 // Fonction pour envoyer un fichier
 int send_file(const char* filename) {
@@ -94,7 +96,7 @@ int send_file(const char* filename) {
         fflush(stdout);
     }
 
-    printf("Fichier %s envoyé avec succès\n", filename);
+    printf("\nFichier %s envoyé avec succès\n", filename);
     fclose(file);
     close(sock);
     return 0;
@@ -130,6 +132,12 @@ int download_file(const char* filename) {
         printf("Erreur: Envoi de la commande de téléchargement\n");
         close(sock);
         return -1;
+    }
+
+    // Création du dossier downloads s'il n'existe pas
+    struct stat st = {0};
+    if (stat("downloads", &st) == -1) {
+        mkdir("downloads", 0777);
     }
 
     // Création du fichier local
@@ -264,7 +272,7 @@ void *sendThread(void *arg) {
 
 // Thread pour recevoir et afficher les messages du serveur
 void *recvThread(void *arg) {
-    structThread *t = (structThread *)arg;
+    thread_arg_t *t = (thread_arg_t *)arg;
     char buffer[BUF_SIZE];
     while (running) {
         ssize_t n = recvfrom(t->sockfd, buffer, BUF_SIZE-1, 0,
@@ -274,6 +282,12 @@ void *recvThread(void *arg) {
             break;
         }
         buffer[n] = '\0';
+        
+        // Vérifier si le message concerne un port TCP pour l'upload
+        if (strncmp(buffer, "UPLOAD_PORT", 11) == 0) {
+            printf("Notification reçue: %s\n", buffer);
+            continue;
+        }
         
         // Affichage spécial pour les messages de salle (qui commencent par "[nom_salle]")
         if (buffer[0] == '[') {
