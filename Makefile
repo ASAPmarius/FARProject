@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g
 
 # Common source files shared between server and client
-COMMON_SRC = dict.c globalVariables.c
+COMMON_SRC = dict.c globalVariables.c chatroom.c
 
 # Server-specific source files
 SERVER_SRC = server.c
